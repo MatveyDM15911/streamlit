@@ -1,9 +1,7 @@
 import streamlit as st
 import os
 import json # Может пригодиться для отправки структурированных данных
-from dotenv import load_dotenv
-load_dotenv()
-api_key= os.getenv("API_KEY")
+api_key = st.secrets["GOOGLE_API_KEY"]
 from google import genai
 from google.genai import types
 import hashlib, base64
