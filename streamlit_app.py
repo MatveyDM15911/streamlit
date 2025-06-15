@@ -448,7 +448,7 @@ if user_input:
 
 # Создаем две колонки: для Selectbox и для кнопки "Очистить историю"
 # Пропорции: 0.7 для selectbox, 0.3 для кнопки.
-col_think, col_clear = st.columns([0.5, 0.5]) 
+col_think, col_clear = st.columns([0.3, 0.7]) 
 
 with col_think:
     think_mode_options = ["NoThink", "Think"]
