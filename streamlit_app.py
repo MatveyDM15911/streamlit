@@ -376,11 +376,21 @@ with col2:
 # Этот вызов важен при каждом ререндере, чтобы новый chat объект создавался с актуальными настройками
 ai.set_chat(model=model_choice, thinking=(think_mode_choice == "Think"))
 
+# Инициализируем st.session_state.messages, если его нет
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Отображаем существующие сообщения из st.session_state.messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
 # --- Форма ввода текста ---
 user_input = st.chat_input("Введите ваш запрос:")
 
 if user_input:
     # Добавляем сообщение пользователя в st.session_state.messages для отображения
+    st.session_state.messages.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
@@ -389,6 +399,7 @@ if user_input:
         response = ai.send_message(user_input)
     
     # Добавляем ответ AI в st.session_state.messages для отображения
+    st.session_state.messages.append({"role": "model", "content": response})
     with st.chat_message("model"):
         st.markdown(response)
     
