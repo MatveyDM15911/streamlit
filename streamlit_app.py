@@ -294,9 +294,6 @@ class AI:
             
             # ОЧЕНЬ ВАЖНО: Обновляем глобальную in-memory историю ПОСЛЕ того, как модель ответила
             user_histories[self.user_id] = self.chat.get_history()
-            
-            # Сохраняем историю на диск после каждого успешного сообщения
-            self.save_history_to_file(self.user_id, user_histories[self.user_id])
 
             return response.text
         except Exception as e:
