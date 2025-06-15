@@ -10,7 +10,7 @@ import hashlib, base64
 if "genai_client" not in st.session_state:
     st.session_state.genai_client = genai.Client(api_key=api_key)
 client = st.session_state.genai_client
-
+def_prompt = "Ты универсальный чат-бот ассистент"
 din_prompt = """<System_Prompt>
 
 <Role_Definition>
@@ -242,7 +242,7 @@ class AI:
             model=self.model,
             config=types.GenerateContentConfig(
                 safety_settings=safety_settings,
-                system_instruction=din_prompt, # Используем ГЛОБАЛЬНУЮ переменную
+                system_instruction=def_prompt, # Используем ГЛОБАЛЬНУЮ переменную
                 thinking_config=self.current_thinking_config
             ),
             history=user_histories[self.user_id] # Используем глобальную in-memory историю
