@@ -359,23 +359,6 @@ st.set_page_config(
 st.title(f"Чат {username}")
 
 
-# --- Выбор модели и режима ---
-col1, col2 = st.columns(2)
-with col1:
-    # Определяем индекс для radio на основе текущей модели AI инстанса
-    model_options = ["flash", "pro"]
-    current_model_short_name = ai.model.split('-')[2] if 'gemini-2.5-' in ai.model else 'flash'
-    current_model_index = model_options.index(current_model_short_name) if current_model_short_name in model_options else 0
-    model_choice = st.radio("Модель:", options=model_options, index=current_model_index, key="model_radio")
-with col2:
-    think_mode_options = ["NoThink", "Think"]
-    current_think_mode_index = 1 if ai.current_thinking_config.thinking_budget > 0 else 0
-    think_mode_choice = st.radio("Режим:", options=think_mode_options, index=current_think_mode_index, key="think_mode_radio")
-
-# Применяем выбранные настройки, если они изменились
-# Этот вызов важен при каждом ререндере, чтобы новый chat объект создавался с актуальными настройками
-ai.set_chat(model=model_choice, thinking=(think_mode_choice == "Think"))
-
 # Инициализируем st.session_state.messages, если его нет
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -405,6 +388,24 @@ if user_input:
     
     # Streamlit автоматически перерендерит страницу после этого, обновляя UI
 
+# --- Выбор модели и режима (перемещено вниз) ---
+st.markdown("---") # Разделитель для ясности
+col1, col2 = st.columns(2)
+with col1:
+    # Определяем индекс для radio на основе текущей модели AI инстанса
+    model_options = ["flash", "pro"]
+    current_model_short_name = ai.model.split('-')[2] if 'gemini-2.5-' in ai.model else 'flash'
+    current_model_index = model_options.index(current_model_short_name) if current_model_short_name in model_options else 0
+    model_choice = st.radio("Модель:", options=model_options, index=current_model_index, key="model_radio_bottom") # Изменен key
+with col2:
+    think_mode_options = ["NoThink", "Think"]
+    current_think_mode_index = 1 if ai.current_thinking_config.thinking_budget > 0 else 0
+    think_mode_choice = st.radio("Режим:", options=think_mode_options, index=current_think_mode_index, key="think_mode_radio_bottom") # Изменен key
+
+# Применяем выбранные настройки, если они изменились
+ai.set_chat(model=model_choice, thinking=(think_mode_choice == "Think"))
+
+
 # Кнопка для очистки истории
 if st.button("Очистить историю"):
     ai.clear_history(user_id)
@@ -414,4 +415,3 @@ if st.button("Очистить историю"):
     # Это важно, чтобы новый чат начинался с чистого листа, даже если Streamlit не перезапустит скрипт
     st.session_state.ai = AI(user_id) 
     st.rerun() # Перезапускаем, чтобы UI обновился корректно
-
