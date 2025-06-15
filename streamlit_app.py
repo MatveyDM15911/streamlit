@@ -366,11 +366,10 @@ class AI:
         else:
             return False  # Для этого user_id истории не было
 
-# --- Получаем user_id и username ---
-user_id = st.query_params.get("user_id")
-username = st.query_params.get("username") or "Гость"
+user_id = st.query_params["user_id"]
+username = st.query_params["username"]
+ai = AI(user_id)
 
-# --- Конфигурация страницы ---
 st.set_page_config(
     page_title="AI Interaction Mini App",
     layout="centered"
@@ -379,12 +378,6 @@ st.set_page_config(
 st.title(f"Чат {username}")
 st.write("Введите текст или данные для отправки AI.")
 
-# --- Инициализация AI и истории ---
-if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
-    st.session_state.user_id = user_id
-    st.session_state.ai = AI(user_id)
-    st.session_state.history = st.session_state.ai.load_history(user_id)
-
 # --- Выбор модели и режима ---
 col1, col2 = st.columns(2)
 with col1:
@@ -392,36 +385,21 @@ with col1:
 with col2:
     think_mode = st.radio("Режим:", options=["NoThink", "Think"], index=0)
 
-# --- Применяем выбранные настройки ---
-# (Просто вызываем методы, не делаем лишних проверок)
-st.session_state.ai.set_chat(model=model, thinking=(think_mode == "Think"))
-
-# --- Показываем историю чата ---
-st.subheader("История чата:")
-history = st.session_state.ai.load_history(user_id)
-for msg in history:
-    role = msg.get("role")
-    text = msg.get("parts", [{}])[0].get("text", "")
-    if role == "user":
-        st.markdown(f"**Вы:** {text}")
-    elif role == "model":
-        st.markdown(f"**AI:** {text}")
+# Применяем выбранные настройки
+ai.set_chat(model=model, thinking=(think_mode == "Think"))
 
 # --- Форма ввода текста ---
-with st.form("chat_form", clear_on_submit=True):
-    user_input = st.text_area("Введите ваше сообщение:", height=100, key="input_area")
-    submitted = st.form_submit_button("Отправить AI")
+user_input = st.text_area(
+    "Введите ваш запрос:",
+    height=150,
+    key="input_area"
+)
 
-if submitted and user_input.strip():
-    response = st.session_state.ai.send_message(user_input)
-    st.session_state.ai.add_to_history(user_input, response, user_id)
-    st.rerun()
-elif submitted:
-    st.warning("Введите текст перед отправкой!")
-
-# --- Кнопка очистки истории ---
-if st.button("Очистить историю"):
-    st.session_state.ai.clear_history(user_id)
-    st.rerun()
+if st.button("Отправить AI"):
+    if user_input:
+        response = ai.send_message(user_input)
+        st.write(response)
+    else:
+        st.warning("Введите текст перед отправкой!")
 
 
