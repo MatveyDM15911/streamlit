@@ -1,6 +1,6 @@
 import streamlit as st
 
-params = st.experimental_get_query_params()
+params = st.st.query_params()
 user_id = params.get("user_id", [None])[0]
 
 if user_id:
