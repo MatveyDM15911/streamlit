@@ -389,7 +389,7 @@ div[data-testid="stHorizontalBlock"] {
 .stSelectbox {
     width: auto !important; 
     min-width: 50px; 
-    max-width: 150px; /* Можно настроить по желанию */
+    max-width: 100px; /* Можно настроить по желанию */
     flex-shrink: 0; 
 }
 
