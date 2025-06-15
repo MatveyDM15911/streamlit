@@ -358,23 +358,6 @@ st.set_page_config(
 
 st.title(f"Чат {username}")
 
-# Добавляем кастомный CSS для изменения курсора на selectbox
-st.markdown("""
-<style>
-/* 
-   Это CSS-правило находит элемент внутри st.selectbox, 
-   который выступает в роли кнопки (отображает выбранный текст и стрелочку)
-   и устанавливает ему курсор-указатель.
-   Классы вроде "st-emotion-..." могут меняться в разных версиях Streamlit, 
-   но stSelectbox и role="button" более стабильны.
-*/
-.stSelectbox > div[role="button"] {
-    cursor: pointer !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-
 # Инициализируем st.session_state.messages, если его нет
 if "messages" not in st.session_state:
     st.session_state.messages = []
