@@ -366,9 +366,11 @@ class AI:
         else:
             return False  # Для этого user_id истории не было
 
-user_id = st.query_params["user_id"]
-username = st.query_params["username"]
-ai = AI(user_id)
+if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
+    st.session_state.user_id = user_id
+    st.session_state.ai = AI(user_id)
+
+ai = st.session_state.ai
 
 st.set_page_config(
     page_title="AI Interaction Mini App",
