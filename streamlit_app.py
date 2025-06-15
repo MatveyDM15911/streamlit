@@ -229,7 +229,7 @@ class AI:
         # Загружаем историю для пользователя (с диска, если она есть)
         # или инициализируем пустой. Это стартовая история для чата.
         if user_id not in user_histories:
-            user_histories[user_id] = self.load_history(user_id) 
+            user_histories[user_id] = []
             
         self.model = "gemini-2.5-flash-preview-05-20"
         
