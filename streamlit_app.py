@@ -395,12 +395,14 @@ div[data-testid="stHorizontalBlock"] {
 
 /* 
    Настраиваем колонку с кнопкой очистки:
-   - display: flex и justify-content: flex-end: выравнивает кнопку вправо.
-   - flex-grow: 1: позволяет этой колонке занять все доступное пространство после selectbox.
+   УБРАНО: justify-content: flex-end; 
+   Теперь кнопка будет выравниваться по левому краю своей колонки.
+   flex-grow: 1: позволяет этой колонке занять все доступное пространство после selectbox.
 */
 div[data-testid="stColumn"]:nth-child(2) { /* Вторая колонка - для кнопки */
-    display: flex;
-    justify-content: flex-end; 
+    display: flex; /* Важно оставить display: flex; чтобы кнопка была внутри flex-контейнера */
+    /* justify-content: flex-start;  <-- Это поведение по умолчанию, можно не указывать */
+    align-items: center; /* Центрируем по вертикали */
     flex-grow: 1; 
 }
 
@@ -447,7 +449,6 @@ st.markdown("---") # Разделитель для ясности
 
 # Создаем две колонки: для Selectbox и для кнопки "Очистить историю"
 # Пропорции: 0.7 для selectbox, 0.3 для кнопки.
-# Эти пропорции теперь будут работать более стабильно благодаря flex-wrap: nowrap.
 col_think, col_clear = st.columns([0.7, 0.3]) 
 
 with col_think:
