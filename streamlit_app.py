@@ -458,7 +458,7 @@ with col_think:
 with col_clear:
     # Кнопка для очистки истории с иконкой "trash"
     # Теперь она будет выровнена по правому краю благодаря CSS выше
-    if st.button("Очистить историю", icon="🗑️", key="clear_history_button_bottom"):
+    if st.button("Clear", icon="🗑️", key="clear_history_button_bottom"):
         ai.clear_history(user_id)
         st.session_state.messages = [] # Очищаем и отображаемую историю
         st.success("История чата очищена.")
