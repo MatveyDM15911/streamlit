@@ -338,6 +338,7 @@ class AI:
 #     print(response + f"\n\nTokens {tokens}")
 
 user_id = st.query_params["user_id"]
+username = st.query_params["username"]
 ai = AI(user_id)
 # --- Конфигурация страницы (опционально) ---
 st.set_page_config(
@@ -346,7 +347,7 @@ st.set_page_config(
 )
 
 # --- Заголовок и описание ---
-st.title("Чат")
+st.title(f"Чат {username}")
 st.write("Введите текст или данные для отправки AI.")
 
 # --- Форма ввода текста ---
