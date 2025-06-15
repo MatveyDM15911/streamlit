@@ -396,13 +396,6 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
     # Инициализация AI объекта при первом запуске или смене пользователя
     st.session_state.user_id = user_id
     st.session_state.ai = AI(user_id)
-    # Загружаем историю из ai объекта в session_state для отображения
-    st.session_state.messages = st.session_state.ai.get_history()
-else:
-    # Если AI уже инициализирован и пользователь не менялся,
-    # убедимся, что отображаемая история синхронизирована с текущим состоянием AI
-    # (Это важно, т.к. set_chat может пересоздать chat объект и обновить user_histories)
-    st.session_state.messages = st.session_state.ai.get_history()
 
 ai = st.session_state.ai
 
@@ -413,10 +406,6 @@ st.set_page_config(
 
 st.title(f"Чат {username}")
 
-# Отображение истории сообщений
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["parts"][0]["text"])
 
 # --- Выбор модели и режима ---
 col1, col2 = st.columns(2)
@@ -440,7 +429,6 @@ user_input = st.chat_input("Введите ваш запрос:")
 
 if user_input:
     # Добавляем сообщение пользователя в st.session_state.messages для отображения
-    st.session_state.messages.append({"role": "user", "parts": [{"text": user_input}]})
     with st.chat_message("user"):
         st.markdown(user_input)
 
@@ -449,7 +437,6 @@ if user_input:
         response = ai.send_message(user_input)
     
     # Добавляем ответ AI в st.session_state.messages для отображения
-    st.session_state.messages.append({"role": "model", "parts": [{"text": response}]})
     with st.chat_message("model"):
         st.markdown(response)
     
@@ -463,7 +450,7 @@ if st.button("Очистить историю"):
     # Переинициализируем AI, чтобы его внутренний чат также был пустым
     # Это важно, чтобы новый чат начинался с чистого листа, даже если Streamlit не перезапустит скрипт
     st.session_state.ai = AI(user_id) 
-    st.experimental_rerun() # Перезапускаем, чтобы UI обновился корректно
+    st.rerun() # Перезапускаем, чтобы UI обновился корректно
 
 # Дополнительная кнопка для сохранения истории на диск вручную (по желанию, т.к. она уже автосохраняется)
 # if st.button("Сохранить историю (на диск)"):
