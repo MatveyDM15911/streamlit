@@ -415,13 +415,13 @@ with st.form("chat_form", clear_on_submit=True):
 if submitted and user_input.strip():
     response = st.session_state.ai.send_message(user_input)
     st.session_state.ai.add_to_history(user_input, response, user_id)
-    st.experimental_rerun()
+    st.rerun()
 elif submitted:
     st.warning("Введите текст перед отправкой!")
 
 # --- Кнопка очистки истории ---
 if st.button("Очистить историю"):
     st.session_state.ai.clear_history(user_id)
-    st.experimental_rerun()
+    st.rerun()
 
 
