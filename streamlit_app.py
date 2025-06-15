@@ -377,7 +377,7 @@ div[data-testid="stHorizontalBlock"] {
     display: flex;
     flex-wrap: nowrap !important; /* Очень важно: запрещает перенос на новую строку */
     align-items: center; /* Выравнивает элементы по центру по вертикали */
-    gap: 1rem; /* Добавляет небольшой отступ между элементами */
+    gap: 0.2rem; /* Добавляет небольшой отступ между элементами */
 }
 
 /* 
@@ -389,7 +389,7 @@ div[data-testid="stHorizontalBlock"] {
 .stSelectbox {
     width: auto !important; 
     min-width: 50px; 
-    max-width: 100px; /* Можно настроить по желанию */
+    max-width: 150px; /* Можно настроить по желанию */
     flex-shrink: 0; 
 }
 
