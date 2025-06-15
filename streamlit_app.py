@@ -1,77 +1,59 @@
 import streamlit as st
-import streamlit.components.v1 as components
-
-# Вставляем JS-код для автоматического и ручного получения user_id
-components.html("""
-<script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script>
-function setUserId() {
-    if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initDataUnsafe) {
-        let userId = window.Telegram.WebApp.initDataUnsafe.user?.id;
-        if (userId) {
-            const url = new URL(window.location);
-            url.searchParams.set('user_id', userId);
-            window.location.replace(url);
-        } else {
-            alert('user_id не найден. Откройте приложение через Telegram.');
-        }
-    } else {
-        alert('Telegram WebApp не найден. Откройте приложение через Telegram.');
-    }
-}
-
-// Попытка автоматического получения user_id
-window.onload = function() {
-    if (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initDataUnsafe) {
-        let userId = window.Telegram.WebApp.initDataUnsafe.user?.id;
-        if (userId) {
-            const url = new URL(window.location);
-            if (!url.searchParams.get('user_id')) {
-                url.searchParams.set('user_id', userId);
-                window.location.replace(url);
-            }
-        }
-    }
-}
-</script>
-<button onclick="setUserId()" style="margin-top:10px;">Получить user_id</button>
-""", height=60)
-
-user_id = st.query_params.get("user_id")
-if not user_id:
-    st.warning("Ожидание получения user_id из Telegram... Если не появилось, нажмите кнопку выше.")
-    st.stop()
-else:
-    st.info(f"Ваш Telegram user_id: {user_id}")
-
-# --- Основной функционал приложения ниже ---
 import json # Может пригодиться для отправки структурированных данных
 
+# --- Конфигурация страницы (опционально) ---
 st.set_page_config(
     page_title="AI Interaction Mini App",
-    layout="centered"
+    layout="centered" # Или "wide"
 )
 
+# --- Заголовок и описание ---
 st.title("Мой AI-помощник")
 st.write("Введите текст или данные для отправки AI.")
 
+# --- Форма ввода текста ---
+# Создаем поле для ввода многострочного текста
 user_input = st.text_area(
     "Введите ваш запрос или заметку:",
-    height=150,
-    key="input_area"
+    height=150, # Высота поля
+    key="input_area" # Уникальный ключ для элемента
 )
 
+# --- Кнопка отправки ---
+# Создаем кнопку. Streamlit выполняет скрипт сверху вниз при каждом взаимодействии,
+# поэтому логика под кнопкой сработает только если кнопка была нажата.
 if st.button("Отправить AI"):
+    # --- Логика обработки и отправки данных ---
+    # Здесь будет код для отправки user_input твоему AI (мне)
+    # Например, через API вызов или формирование структурированного сообщения
+
     if user_input:
+        # В этом простом примере мы просто отображаем введенный текст
         st.write("Вы ввели:")
         st.write(user_input)
-        # Здесь может быть отправка данных вашему AI
-        st.success("Данные отправлены (имитация)")
-    else:
-        st.warning("Введите текст перед отправкой!")
 
+        # --- Placeholder для отправки данных AI ---
+        # Здесь ты бы вызвал функцию или отправил запрос к своему боту/API,
+        # который уже взаимодействует со мной.
+        # Например: send_to_ai_api(user_input)
+
+        st.success("Данные отправлены (имитация)") # Показать сообщение об успешной отправке
+    else:
+        st.warning("Введите текст перед отправкой!") # Предупреждение, если поле пустое
+
+# --- Дополнительные элементы (опционально) ---
+# Можно добавить другие поля ввода (например, для даты, времени)
 note_date = st.date_input("Дата для заметки:")
 note_time = st.text_input("Время для заметки:", value="HH:MM")
 
+# Или отображение прошлых действий/ответов
 st.subheader("Последние ответы AI:")
 st.text("Здесь могли бы отображаться ответы")
+
+# --- Как запустить Streamlit приложение ---
+# 1. Сохрани этот код как Python файл (например, mini_app.py)
+# 2. Открой терминал в папке с файлом
+# 3. Установи Streamlit: pip install streamlit
+# 4. Запусти приложение командой: streamlit run mini_app.py
+# 5. Streamlit откроет веб-страницу в браузере (обычно на порту 8501).
+# 6. Этот адрес (http://127.0.0.1:8501) ты будешь пробрасывать через ngrok.
