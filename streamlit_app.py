@@ -272,7 +272,7 @@ class AI:
             model=self.model,
             config=types.GenerateContentConfig(
                 safety_settings=safety_settings,
-                system_instruction=din_prompt, # Всегда используем ГЛОБАЛЬНЫЙ din_prompt
+                system_instruction=def_prompt, # Всегда используем ГЛОБАЛЬНЫЙ din_prompt
                 thinking_config=self.current_thinking_config
             ),
             history=user_histories[self.user_id] # Передаем самую свежую историю
