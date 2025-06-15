@@ -324,33 +324,6 @@ class AI:
         st.success(f"Файл {sha256} загружен.")
         return file
     
-    # Метод для сохранения истории на диск
-    def save_history_to_file(self, user_id, history_data, json_path="history.json"):
-        if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    all_histories = json.load(f)
-            except json.JSONDecodeError:
-                # Если файл поврежден, начинаем с пустого словаря
-                all_histories = {}
-        else:
-            all_histories = {}
-
-        all_histories[str(user_id)] = history_data
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(all_histories, f, ensure_ascii=False, indent=2)
-
-    # Метод для загрузки истории с диска
-    def load_history(self, user_id, json_path="history.json"):
-        if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    all_histories = json.load(f)
-                return all_histories.get(str(user_id), [])
-            except json.JSONDecodeError:
-                # Если файл поврежден или пуст, возвращаем пустую историю
-                return [] 
-        return []
 
     def clear_history(self, user_id, json_path="history.json"):
         """
@@ -361,25 +334,7 @@ class AI:
         
         # Обновляем self.chat, чтобы он использовал пустую историю
         self.set_chat(model=self.model, thinking=(self.current_thinking_config.thinking_budget > 0))
-
-        # Очищаем на диске
-        if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
-            try:
-                with open(json_path, "r", encoding="utf-8") as f:
-                    all_histories = json.load(f)
-            except json.JSONDecodeError:
-                all_histories = {}
-
-            user_id_str = str(user_id)
-            if user_id_str in all_histories:
-                all_histories[user_id_str] = []  # Очищаем историю пользователя на диске
-
-                with open(json_path, "w", encoding="utf-8") as f:
-                    json.dump(all_histories, f, ensure_ascii=False, indent=2)
-                return True
-            else:
-                return False
-        return False
+        return True
 
 # --- Streamlit UI ---
 # user_id и username должны быть переданы, например, через st.query_params
