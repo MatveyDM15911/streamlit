@@ -366,6 +366,7 @@ class AI:
         else:
             return False  # Для этого user_id истории не было
 
+# --- Получаем user_id и username ---
 user_id = st.query_params.get("user_id")
 username = st.query_params.get("username") or "Гость"
 
@@ -375,33 +376,27 @@ st.set_page_config(
     layout="centered"
 )
 
-# --- Заголовок и описание ---
 st.title(f"Чат {username}")
 st.write("Введите текст или данные для отправки AI.")
 
 # --- Инициализация AI и истории ---
-if 'ai' not in st.session_state or st.session_state.get('user_id') != user_id:
+if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
     st.session_state.user_id = user_id
     st.session_state.ai = AI(user_id)
-    # Загружаем историю пользователя из общего файла
     st.session_state.history = st.session_state.ai.load_history(user_id)
-    # Устанавливаем чат с историей
-    st.session_state.ai.set_chat(history=st.session_state.history)
 
 # --- Выбор модели и режима ---
 col1, col2 = st.columns(2)
 with col1:
-    model = st.radio("Модель:", options=["flash", "pro"], index=0 if st.session_state.ai.model.endswith("flash") else 1)
+    model = st.radio("Модель:", options=["flash", "pro"], index=0)
 with col2:
     think_mode = st.radio("Режим:", options=["NoThink", "Think"], index=0)
 
 # --- Применяем выбранные настройки ---
-if model != st.session_state.ai.model:
-    st.session_state.ai.set_chat(model=model)
-if (think_mode == "Think") != (st.session_state.ai.chat.config.thinking_config.thinking_budget > 0):
-    st.session_state.ai.set_chat(thinking=(think_mode == "Think"))
+# (Просто вызываем методы, не делаем лишних проверок)
+st.session_state.ai.set_chat(model=model, thinking=(think_mode == "Think"))
 
-# --- Отображение истории чата ---
+# --- Показываем историю чата ---
 st.subheader("История чата:")
 history = st.session_state.ai.load_history(user_id)
 for msg in history:
@@ -418,11 +413,8 @@ with st.form("chat_form", clear_on_submit=True):
     submitted = st.form_submit_button("Отправить AI")
 
 if submitted and user_input.strip():
-    # Получаем ответ от AI
     response = st.session_state.ai.send_message(user_input)
-    # Сохраняем в историю
     st.session_state.ai.add_to_history(user_input, response, user_id)
-    # Перезапускаем страницу для обновления истории
     st.experimental_rerun()
 elif submitted:
     st.warning("Введите текст перед отправкой!")
