@@ -279,8 +279,7 @@ class AI:
         return response.text
     def get_history(self):
         self.history = self.chat.get_history()
-        # Возвращаем историю пользователя
-        return self.history
+        return self.history[0]
     def count_tokens(self):
         self.history = self.chat.get_history()
         self.tokens = client.models.count_tokens(model=self.model, contents=self.history)
@@ -299,74 +298,138 @@ class AI:
         file = client.files.upload(file=file_path, config=(types.UploadFileConfig(display_name=sha256)))
         print(f"Файл {sha256} загружен.")
         return file
- 
+    
+    def add_to_history(self, user_text, model_text, user_id, json_path="history.json"):
+        # Загружаем общий словарь историй
+        if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
+            with open(json_path, "r", encoding="utf-8") as f:
+                all_histories = json.load(f)
+        else:
+            all_histories = {}
 
-# while True:
-#     text = input("Вы: ")
-#     if text.lower() == "think":
-#         ai.set_chat(thinking=True)
-#         print("Thinking mode activated.")
-#         continue
-#     elif text.lower() == "nothink":
-#         ai.set_chat(thinking=False)
-#         print("Thinking mode deactivated.")
-#         continue
-#     elif text.lower() == "pro":
-#         ai.set_chat(model="pro")
-#         print("Switched to Pro model.")
-#         continue
-#     elif text.lower() == "flash":
-#         ai.set_chat(model="flash")
-#         print("Switched to Flash model.")
-#         continue
-#     while True:
-#         try:
-#             response = ai.send_message(text)
-#             tokens = ai.count_tokens()
-#             break  # если успех — выходим из внутреннего цикла
-#         except Exception as e:
-#             if "user location" in str(e).lower():
-#                 continue
-#             elif "RESOURCE_EXHAUSTED" in str(e).lower():
-#                 response = f"Прошка в откате, выбери flash"
-#                 tokens = 0
-#                 break 
-#             else:
-#                 response = f"Произошла {e} при обработке запроса. Пожалуйста, попробуйте позже."
-#                 tokens = 0
-#                 break
-#     print(response + f"\n\nTokens {tokens}")
+        # Получаем историю конкретного пользователя
+        user_id_str = str(user_id)  # ключи в JSON всегда строки
+        user_history = all_histories.get(user_id_str, [])
 
-user_id = st.query_params["user_id"]
-username = st.query_params["username"]
-ai = AI(user_id)
-# --- Конфигурация страницы (опционально) ---
+        # Добавляем сообщения
+        user_history.append({
+            "role": "user",
+            "parts": [{"text": user_text}]
+        })
+        user_history.append({
+            "role": "model",
+            "parts": [{"text": model_text}]
+        })
+
+        # Сохраняем обратно
+        all_histories[user_id_str] = user_history
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(all_histories, f, ensure_ascii=False, indent=2)
+
+        return user_history
+
+    def load_history(self, user_id, json_path="history.json"):
+        if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    all_histories = json.load(f)
+            except json.JSONDecodeError:
+                all_histories = {}
+        else:
+            all_histories = {}
+
+        user_id_str = str(user_id)
+        user_history = all_histories.get(user_id_str, [])
+        return user_history
+    def clear_history(self, user_id, json_path="history.json"):
+        """
+        Очищает историю сообщений конкретного пользователя по user_id.
+        """
+        # Загружаем общий словарь историй
+        if os.path.exists(json_path) and os.path.getsize(json_path) > 0:
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    all_histories = json.load(f)
+            except json.JSONDecodeError:
+                all_histories = {}
+        else:
+            all_histories = {}
+
+        user_id_str = str(user_id)
+        if user_id_str in all_histories:
+            all_histories[user_id_str] = []  # Очищаем историю пользователя
+
+            # Сохраняем обновлённый словарь обратно в файл
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(all_histories, f, ensure_ascii=False, indent=2)
+            return True  # История была очищена
+        else:
+            return False  # Для этого user_id истории не было
+
+user_id = st.query_params.get("user_id")
+username = st.query_params.get("username") or "Гость"
+
+# --- Конфигурация страницы ---
 st.set_page_config(
     page_title="AI Interaction Mini App",
-    layout="centered" # Или "wide"
+    layout="centered"
 )
 
 # --- Заголовок и описание ---
 st.title(f"Чат {username}")
 st.write("Введите текст или данные для отправки AI.")
 
-# --- Форма ввода текста ---
-# Создаем поле для ввода многострочного текста
-user_input = st.text_area(
-    "Введите ваш запрос или заметку:",
-    height=150, # Высота поля
-    key="input_area" # Уникальный ключ для элемента
-)
+# --- Инициализация AI и истории ---
+if 'ai' not in st.session_state or st.session_state.get('user_id') != user_id:
+    st.session_state.user_id = user_id
+    st.session_state.ai = AI(user_id)
+    # Загружаем историю пользователя из общего файла
+    st.session_state.history = st.session_state.ai.load_history(user_id)
+    # Устанавливаем чат с историей
+    st.session_state.ai.set_chat(history=st.session_state.history)
 
-# --- Кнопка отправки ---
-# Создаем кнопку. Streamlit выполняет скрипт сверху вниз при каждом взаимодействии,
-# поэтому логика под кнопкой сработает только если кнопка была нажата.
-if st.button("Отправить AI"):
-    if user_input:
-        # В этом простом примере мы просто отображаем введенный текст
-        response = ai.send_message(user_input)
-        st.write(response)
-    else:
-        st.warning("Введите текст перед отправкой!") # Предупреждение, если поле пустое
+# --- Выбор модели и режима ---
+col1, col2 = st.columns(2)
+with col1:
+    model = st.radio("Модель:", options=["flash", "pro"], index=0 if st.session_state.ai.model.endswith("flash") else 1)
+with col2:
+    think_mode = st.radio("Режим:", options=["NoThink", "Think"], index=0)
+
+# --- Применяем выбранные настройки ---
+if model != st.session_state.ai.model:
+    st.session_state.ai.set_chat(model=model)
+if (think_mode == "Think") != (st.session_state.ai.chat.config.thinking_config.thinking_budget > 0):
+    st.session_state.ai.set_chat(thinking=(think_mode == "Think"))
+
+# --- Отображение истории чата ---
+st.subheader("История чата:")
+history = st.session_state.ai.load_history(user_id)
+for msg in history:
+    role = msg.get("role")
+    text = msg.get("parts", [{}])[0].get("text", "")
+    if role == "user":
+        st.markdown(f"**Вы:** {text}")
+    elif role == "model":
+        st.markdown(f"**AI:** {text}")
+
+# --- Форма ввода текста ---
+with st.form("chat_form", clear_on_submit=True):
+    user_input = st.text_area("Введите ваше сообщение:", height=100, key="input_area")
+    submitted = st.form_submit_button("Отправить AI")
+
+if submitted and user_input.strip():
+    # Получаем ответ от AI
+    response = st.session_state.ai.send_message(user_input)
+    # Сохраняем в историю
+    st.session_state.ai.add_to_history(user_input, response, user_id)
+    # Перезапускаем страницу для обновления истории
+    st.experimental_rerun()
+elif submitted:
+    st.warning("Введите текст перед отправкой!")
+
+# --- Кнопка очистки истории ---
+if st.button("Очистить историю"):
+    st.session_state.ai.clear_history(user_id)
+    st.experimental_rerun()
 
 
