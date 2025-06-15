@@ -1,10 +1,12 @@
 import streamlit as st
 import json # Может пригодиться для отправки структурированных данных
-
+from dotenv import load_dotenv
+load_dotenv()
+api_key= os.getenv("API_KEY")
 from google import genai
 from google.genai import types
 import hashlib, base64
-client = genai.Client(api_key="AIzaSyAxQdGjSHF7yBGj1oZLsWuc0hxL2jaBwR0")
+client = genai.Client(api_key=api_key)
 din_prompt = """<System_Prompt>
 
 <Role_Definition>
