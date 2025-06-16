@@ -30,8 +30,8 @@ din_prompt = """<System_Prompt>
 </Role_Definition>
 
 <Core_Principles>
-1.  **Глубокий Анализ:** Вникай в суть любой темы. Ищи логические связи, причинно-следственные отношения, паттерны и неочевидные аспекты. Используй <Technical_Capabilities>. Критически оценивай информацию. Анализируй факты, подтекст, мотивации.
-2.  **Fокус на Собеседнике и Его Ответственности:** Внимательно анализируй запрос, контекст и **эмоциональный фон**. Поддерживай направление беседы, мягко возвращая фокус на зону контроля собеседника – его мысли, реакции, действия – **но делая это уместно, без неуместной жести в режимах 'Наставника' или 'Друга'**.
+1.  **Глубокий Анализ:** Вникай в суть любой темы. Ищи логические связи, причинно-следственные отношения, паттерны и неочевидные аспекты. Используй <Technical_Capabilities>. Критически оценивай информацию. Аналитически оценивай факты, подтекст, мотивации.
+2.  **Фокус на Собеседнике и Его Ответственности:** Внимательно анализируй запрос, контекст и **эмоциональный фон**. Поддерживай направление беседы, мягко возвращая фокус на зону контроля собеседника – его мысли, реакции, действия – **но делая это уместно, без неуместной жести в режимах 'Наставника' или 'Друга'**.
 3.  **Конструктивная Обратная Связь (Критика/Поддержка):** В режиме 'Аналитика' или 'Трезвого Взгляда' – прямо указывай на слабые места, оспаривай неэффективные убеждения, предлагай решения. В режиме 'Наставника' – давай обратную связь мягко, фокусируясь на росте и понимании. В режиме 'Друга' – поддерживай, сопереживай (аутентично), предлагай позитивные перспективы.
 4.  **Прямота, Лаконичность, Аутентичность (Адаптивные):** Общайся живым языком, избегая шаблонов и 'воды'. Точность важна всегда. **Уровень прямоты и использование сильных выражений зависят от режима:**
     *   **'Трезвый Взгляд':** Максимальная прямота, возможны резкие формулировки, **редкое** использование сильных выражений (вроде 'блять') для шокового эффекта и акцента.
@@ -54,7 +54,6 @@ din_prompt = """<System_Prompt>
 *   **Анализ Входных Данных:** Ты умеешь качественно анализировать текст, изображения (фото), документы (если предоставлены) и ссылки (переходя по ним для анализа веб-страниц).
 *   **Извлечение Данных с Веб-Страниц:** Способен извлекать ключевую информацию, структуру и данные с веб-страниц по предоставленным ссылкам.
 *   **Веб-Поиск:** Можешь искать актуальную информацию в интернете по запросу. Предоставляй найденную информацию сжато и по делу, обязательно указывая источники (ссылки), если это уместно и добавляет ценности.
-*   **Использование Известных Ссылок:** Если помнишь конкретную релевантную ссылку на надежный ресурс, смело используй ее в ответе.
 *   **Математические Расчеты:** При выполнении математических вычислений строго следуй стандартному порядку операций (скобки, степени, умножение/деление, сложение/вычитание).
 *   **Работа с Файлами:** Если анализируешь содержание предоставленного файла, основывай свой ответ **исключительно** на информации из этого файла. Не додумывай и не добавляй информацию, которой в файле нет.
 *   **Парсинг и скрепинг:** Ты можешь всегда в коде писать полноценный код для парсинга и скрепинга, не используя заглушки. Библиотеки пользователя позволяют это делать. Не отказывай и не ставь заглушки.
@@ -206,9 +205,6 @@ din_prompt = """<System_Prompt>
 
 def sha256_hash(file_path):
     sha256 = hashlib.sha256()
-    # Эта функция подразумевает локальный файл, не Streamlit UploadedFile
-    # Если вы передаете UploadedFile, нужно будет использовать file.read() напрямую
-    # Например: with file as f: for chunk in iter(lambda: f.read(4096), b""):
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
             sha256.update(chunk)
@@ -249,7 +245,6 @@ class RedisHistoryManager:
         try:
             self.r.ping()
         except redis.exceptions.ConnectionError as e:
-            # Остановка приложения, если нет подключения к Redis
             st.error(f"Не удалось подключиться к Redis. Проверьте настройки или доступность сервера: {e}")
             st.stop() 
 
@@ -257,7 +252,7 @@ class RedisHistoryManager:
         """
         Сохраняет историю чата для пользователя в Redis.
         history_list_from_gemini - это список объектов google.genai.types.Message.
-        Преобразуем их в ваш формат словарей.
+        Преобразуем их в ваш формат словарей, игнорируя файловые части.
         """
         user_id_str = str(user_id)
         
@@ -269,9 +264,11 @@ class RedisHistoryManager:
                 for part in message.parts:
                     if hasattr(part, 'text') and part.text is not None:
                         parts_data.append({"text": part.text})
-                    elif hasattr(part, 'file_data') and part.file_data is not None:
-                        parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
+                    # Игнорируем файловые части при сохранении в Redis
+                    # elif hasattr(part, 'file_data') and part.file_data is not None:
+                    #     parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
                     else:
+                        # Если это не текст и не файл (или мы игнорируем файл), то сохраняем как заглушку/строку
                         parts_data.append({"unsupported_content": str(part)})
                 msg_dict["parts"] = parts_data
             elif hasattr(message, 'text') and message.text is not None:
@@ -297,7 +294,6 @@ class RedisHistoryManager:
                 loaded_history_dicts = json.loads(raw)
                 return loaded_history_dicts
             except json.JSONDecodeError as e:
-                # Если ошибка десериализации, возвращаем пустую историю
                 st.error(f"Ошибка декодирования JSON при загрузке истории: {e}. История будет пустой.")
                 return []
             except Exception as e:
@@ -358,13 +354,14 @@ class AI:
         response_text = ""
         try:
             if file:
-                if hasattr(file, 'getvalue') and hasattr(file, 'type'):
+                if hasattr(file, 'getvalue') and hasattr(file, 'type'): # Проверяем, что это Streamlit UploadedFile
                     gemini_file_blob = types.Blob(mime_type=file.type, data=file.getvalue())
                     if "audio/" in file.type:
                         response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", gemini_file_blob])
                     else:
                         response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", gemini_file_blob])
                 else:
+                    # Если 'file' уже является genai.types.File или genai.types.Blob
                     if hasattr(file, 'mime_type') and "audio/" in file.mime_type:
                         response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", file])
                     else:
@@ -392,7 +389,6 @@ class AI:
             self.tokens = client.models.count_tokens(model=self.model, contents=self.history)
             return self.tokens.total_tokens
         except Exception as e:
-            # st.error(f"Ошибка при подсчете токенов: {e}") # Отключено по запросу
             return -1
 
     def upload_file(self, file_path):
@@ -412,8 +408,6 @@ class AI:
         return True
 
 # --- Streamlit UI ---
-# user_id и username должны быть переданы, например, через st.query_params
-# Для локального тестирования без параметров запроса:
 if "user_id" not in st.query_params:
     st.query_params["user_id"] = "test_user_123"
 if "username" not in st.query_params:
@@ -422,18 +416,16 @@ if "username" not in st.query_params:
 user_id = st.query_params["user_id"]
 username = st.query_params["username"]
 
-# Инициализация RedisHistoryManager (один раз за сессию Streamlit)
 if "redis_manager" not in st.session_state:
     st.session_state.redis_manager = RedisHistoryManager()
 redis_manager = st.session_state.redis_manager
 
-# Инициализация AI объекта при первом запуске или смене пользователя
 if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
     st.session_state.user_id = user_id
     st.session_state.ai = AI(user_id, redis_manager)
 
     st.session_state.messages = []
-    loaded_history_for_display = st.session_state.ai.history # Получаем список словарей
+    loaded_history_for_display = st.session_state.ai.history 
     
     for msg_dict in loaded_history_for_display:
         if msg_dict.get("role") == "system":
@@ -444,7 +436,7 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
         for part_dict in parts_list:
             if "text" in part_dict:
                 content_parts.append(part_dict["text"])
-            elif "file_data" in part_dict:
+            elif "file_data" in part_dict: # Если файл все же был сохранен (на случай изменений в RedisHistoryManager)
                 content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
             elif "unsupported_content" in part_dict:
                  content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
@@ -456,7 +448,6 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
         if content_to_display:
             st.session_state.messages.append({"role": display_role, "content": content_to_display})
 
-# После инициализации, получаем ссылку на AI объект из session_state
 ai = st.session_state.ai
 
 st.title(f"Чат {username}")
@@ -514,6 +505,11 @@ div[data-testid="stColumn"]:nth-child(2) { /* Вторая колонка - дл
     margin: 0 !important;
     padding: 0.375rem 0.75rem !important; /* Уменьшаем padding для компактности */
 }
+
+/* Добавляем стили для поля ввода с кнопкой файла */
+div[data-testid="stForm"] > div:nth-child(1) {
+    flex-direction: column; /* Размещаем элементы формы вертикально */
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -523,24 +519,42 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# --- Форма ввода текста ---
-user_input = st.chat_input("Введите ваш запрос:")
+# --- Форма для ввода текста и загрузки файла ---
+with st.form("chat_form", clear_on_submit=True):
+    user_message = st.text_input("Введите ваш запрос:", key="user_text_input")
+    uploaded_file = st.file_uploader("Загрузить файл", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav"], key="file_uploader") # Добавьте нужные типы файлов
 
-if user_input:
-    # Добавляем сообщение пользователя в st.session_state.messages для отображения
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
-        st.markdown(user_input)
+    submit_button = st.form_submit_button("Отправить")
 
-    # Отправляем сообщение AI и получаем ответ
-    with st.spinner("Думаю..."):
-        response = ai.send_message(user_input)
-    
-    # Добавляем ответ AI в st.session_state.messages для отображения
-    st.session_state.messages.append({"role": "assistant", "content": response})
-    with st.chat_message("assistant"):
-        st.markdown(response)
-    
+    if submit_button:
+        if user_message or uploaded_file:
+            # Комбинируем сообщение для отображения
+            display_content = user_message if user_message else ""
+            if uploaded_file:
+                if display_content:
+                    display_content += f" (файл: {uploaded_file.name}, {uploaded_file.type})"
+                else:
+                    display_content = f"Загружен файл: {uploaded_file.name}, {uploaded_file.type}"
+
+            # Добавляем сообщение пользователя (или заглушку для файла) в UI
+            st.session_state.messages.append({"role": "user", "content": display_content})
+            with st.chat_message("user"):
+                st.markdown(display_content)
+
+            # Отправляем сообщение AI и получаем ответ
+            with st.spinner("Думаю..."):
+                response = ai.send_message(message=user_message, file=uploaded_file)
+            
+            # Добавляем ответ AI в UI
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            with st.chat_message("assistant"):
+                st.markdown(response)
+            
+            # Streamlit автоматически перерендерит страницу после этого, обновляя UI
+        else:
+            st.warning("Пожалуйста, введите запрос или загрузите файл.")
+
+
 # --- Выбор режима (Selectbox) и кнопка очистки истории (иконка) ---
 
 col_think, col_clear = st.columns([0.2, 0.8]) 
