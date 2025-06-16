@@ -355,13 +355,11 @@ class AI:
         try:
             if file:
                 if hasattr(file, 'getvalue') and hasattr(file, 'type'): # Проверяем, что это Streamlit UploadedFile
-                    gemini_file_blob = types.Blob(mime_type=file.type, data=file.getvalue())
                     if "audio/" in file.type:
-                        response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", gemini_file_blob])
+                        response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", file])
                     else:
-                        response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", gemini_file_blob])
+                        response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", file])
                 else:
-                    # Если 'file' уже является genai.types.File или genai.types.Blob
                     if hasattr(file, 'mime_type') and "audio/" in file.mime_type:
                         response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", file])
                     else:
