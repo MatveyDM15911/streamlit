@@ -303,14 +303,14 @@ class RedisHistoryManager:
                     if "parts" in msg_dict:
                         for part_dict in msg_dict["parts"]:
                             if "text" in part_dict and part_dict["text"] is not None:
-                                parts.append(types.Text(text=part_dict["text"]))
+                                parts.append(text=part_dict["text"])
                     
                     # Создаем types.Message объект
                     # Важно: Chat API может требовать непустой список parts.
                     # Если частей нет, но роль есть, можно добавить пустую текстовую часть.
                     if role:
                         if not parts: # Если нет текстовых частей, но сообщение есть (например, был только файл)
-                             parts.append(types.Text(text="")) # Добавляем пустой текст, чтобы Pydantic не ругался
+                             parts.append(text="") # Добавляем пустой текст, чтобы Pydantic не ругался
                         gemini_history_objects.append(types.Message(role=role, parts=parts))
 
                 return gemini_history_objects
@@ -484,7 +484,7 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
         content_parts = []
         if hasattr(msg_gemini, 'parts'):
             for part in msg_gemini.parts:
-                if hasattr(part, 'text') and part.text is not None:
+                if hasattr(part, 'text'):
                     content_parts.append(part.text)
                 # Поскольку RedisHistoryManager.save_history теперь не сохраняет нетекстовые части,
                 # этот блок для отображения "file_data" или "unsupported_content"
