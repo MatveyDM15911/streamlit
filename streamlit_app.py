@@ -6,6 +6,7 @@ import redis
 import tempfile # Для создания временных файлов
 from google import genai
 from google.genai import types
+from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
 import datetime # Для генерации имени чата
 from streamlit_mermaid import st_mermaid # Импортируем компонент для Mermaid
 import re # Для регулярных выражений, чтобы найти блоки Mermaid
@@ -26,7 +27,9 @@ api_key = st.secrets["GOOGLE_API_KEY"]
 if "genai_client" not in st.session_state:
     st.session_state.genai_client = genai.Client(api_key=api_key)
 client = st.session_state.genai_client
-
+tools = []
+tools.append(Tool(url_context=types.UrlContext))
+tools.append(Tool(google_search=types.GoogleSearch))
 # Глобальный промпт для системной инструкции (без изменений)
 din_prompt = """<System_Prompt>
 
@@ -361,6 +364,7 @@ class AI:
             model=self.model,
             config=types.GenerateContentConfig(
                 safety_settings=safety_settings,
+                tools=tools,
                 system_instruction=din_prompt,
                 thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
             ),
