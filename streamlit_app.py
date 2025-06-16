@@ -738,15 +738,20 @@ with st.form("chat_form", clear_on_submit=True):
     input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос"
     
     user_message = st.text_input(input_label, key="user_text_input")
-    uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") # Добавьте нужные типы файлов
+    
+    # Скрываем file_uploader, если это первый ввод названия чата
+    if not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME):
+        uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") # Добавьте нужные типы файлов
+    else:
+        uploaded_file = None # Важно явно установить None, если элемент скрыт
 
     submit_button = st.form_submit_button("Отправить")
 
     if submit_button:
-        if user_message or uploaded_file:
+        if user_message or (uploaded_file and not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME)):
             # Комбинируем сообщение для отображения
             display_content = user_message if user_message else ""
-            if uploaded_file:
+            if uploaded_file: # uploaded_file будет None, если скрыт
                 if display_content:
                     display_content += f" (файл: {uploaded_file.name}, {uploaded_file.type})"
                 else:
@@ -769,33 +774,34 @@ with st.form("chat_form", clear_on_submit=True):
             # Streamlit автоматически перерендерит страницу после этого, обновляя UI
             st.rerun() # Явный rerun для немедленного отображения нового сообщения и возможного парсинга Mermaid
         else:
-            st.warning("Пожалуйста, введите запрос или загрузите файл.")
+            st.warning("Пожалуйста, введите запрос или загрузите файл (если доступно).")
 
 
 # --- Выбор режима (Selectbox) и кнопка очистки истории (иконка) ---
+# Эти элементы также скрываем, если это первый ввод названия чата
+if not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME):
+    col_think, col_clear = st.columns([0.2, 0.8]) 
 
-col_think, col_clear = st.columns([0.2, 0.8]) 
+    with col_think:
+        think_mode_options = ["NoThink", "Think"]
+        # Убедимся, что ai объект инициализирован перед доступом к его атрибутам
+        current_think_mode_index = 1 if hasattr(ai, 'thinking_budget') and ai.thinking_budget > 0 else 0
+        
+        think_mode_choice = st.selectbox(
+            "Режим:",
+            options=think_mode_options,
+            index=current_think_mode_index,
+            key="think_mode_selectbox_bottom",
+            label_visibility="collapsed"
+        )
 
-with col_think:
-    think_mode_options = ["NoThink", "Think"]
-    # Убедимся, что ai объект инициализирован перед доступом к его атрибутам
-    current_think_mode_index = 1 if hasattr(ai, 'thinking_budget') and ai.thinking_budget > 0 else 0
-    
-    think_mode_choice = st.selectbox(
-        "Режим:",
-        options=think_mode_options,
-        index=current_think_mode_index,
-        key="think_mode_selectbox_bottom",
-        label_visibility="collapsed"
-    )
+    with col_clear:
+        # Кнопка для очистки (удаления) текущего чата
+        if st.button("🗑️", key="clear_history_button_bottom", help="Удалить текущий диалог"):
+            # ai.clear_history() теперь удаляет текущий чат и переключает на "Новый чат"
+            if ai.clear_history(): 
+                st.success(f"Диалог '{st.session_state.current_chat_name}' удален.")
+                st.rerun() # Перезапускаем для отображения "Нового чата"
 
-with col_clear:
-    # Кнопка для очистки (удаления) текущего чата
-    if st.button("🗑️", key="clear_history_button_bottom", help="Удалить текущий диалог"):
-        # ai.clear_history() теперь удаляет текущий чат и переключает на "Новый чат"
-        if ai.clear_history(): 
-            st.success(f"Диалог '{st.session_state.current_chat_name}' удален.")
-            st.rerun() # Перезапускаем для отображения "Нового чата"
-
-# Применяем выбранные настройки
-ai.set_chat_settings(model="flash", thinking=(think_mode_choice == "Think"))
+    # Применяем выбранные настройки только если элементы отображены
+    ai.set_chat_settings(model="flash", thinking=(think_mode_choice == "Think"))
