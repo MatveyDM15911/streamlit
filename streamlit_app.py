@@ -2,13 +2,18 @@ import streamlit as st
 import os
 import json
 import hashlib, base64
-import redis # <-- Добавляем импорт redis
+import redis
 from google import genai
-from google.genai import types # Импорт необходим для базовых типов Gemini API
+from google.genai import types
+
+# --- 1. ПЕРЕМЕЩАЕМ st.set_page_config В НАЧАЛО ---
+# Эта команда должна быть первой!
 st.set_page_config(
-    page_title="AI Interaction Mini App",
+    page_title="AI Interaction Mini App", # Здесь используем статичный заголовок для вкладки
     layout="centered"
 )
+# --- КОНЕЦ ПЕРЕМЕЩЕНИЯ ---
+
 # Инициализация API ключа из Streamlit Secrets
 api_key = st.secrets["GOOGLE_API_KEY"]
 
@@ -26,7 +31,7 @@ din_prompt = """<System_Prompt>
 
 <Core_Principles>
 1.  **Глубокий Анализ:** Вникай в суть любой темы. Ищи логические связи, причинно-следственные отношения, паттерны и неочевидные аспекты. Используй <Technical_Capabilities>. Критически оценивай информацию. Анализируй факты, подтекст, мотивации.
-2.  **Фокус на Собеседнике и Его Ответственности:** Внимательно анализируй запрос, контекст и **эмоциональный фон**. Поддерживай направление беседы, мягко возвращая фокус на зону контроля собеседника – его мысли, реакции, действия – **но делая это уместно, без неуместной жести в режимах 'Наставника' или 'Друга'**.
+2.  **Fокус на Собеседнике и Его Ответственности:** Внимательно анализируй запрос, контекст и **эмоциональный фон**. Поддерживай направление беседы, мягко возвращая фокус на зону контроля собеседника – его мысли, реакции, действия – **но делая это уместно, без неуместной жести в режимах 'Наставника' или 'Друга'**.
 3.  **Конструктивная Обратная Связь (Критика/Поддержка):** В режиме 'Аналитика' или 'Трезвого Взгляда' – прямо указывай на слабые места, оспаривай неэффективные убеждения, предлагай решения. В режиме 'Наставника' – давай обратную связь мягко, фокусируясь на росте и понимании. В режиме 'Друга' – поддерживай, сопереживай (аутентично), предлагай позитивные перспективы.
 4.  **Прямота, Лаконичность, Аутентичность (Адаптивные):** Общайся живым языком, избегая шаблонов и 'воды'. Точность важна всегда. **Уровень прямоты и использование сильных выражений зависят от режима:**
     *   **'Трезвый Взгляд':** Максимальная прямота, возможны резкие формулировки, **редкое** использование сильных выражений (вроде 'блять') для шокового эффекта и акцента.
@@ -232,22 +237,21 @@ safety_settings = [
 # Класс для управления историей в Redis
 class RedisHistoryManager:
     def __init__(self):
-        # Используйте st.secrets для получения данных подключения к Redis
         self.r = redis.Redis(
             host=st.secrets["REDIS_HOST"],
             port=int(st.secrets["REDIS_PORT"]),
             decode_responses=True,
             username=st.secrets["REDIS_USERNAME"],
             password=st.secrets["REDIS_PASSWORD"],
-            socket_connect_timeout=5, # Таймаут для подключения
-            socket_timeout=5 # Таймаут для операций
+            socket_connect_timeout=5,
+            socket_timeout=5
         )
         try:
             self.r.ping()
-            st.success("Успешно подключено к Redis!")
         except redis.exceptions.ConnectionError as e:
+            # Остановка приложения, если нет подключения к Redis
             st.error(f"Не удалось подключиться к Redis. Проверьте настройки или доступность сервера: {e}")
-            st.stop() # Останавливаем приложение, если нет подключения
+            st.stop() 
 
     def save_history(self, user_id, history_list_from_gemini):
         """
@@ -255,32 +259,21 @@ class RedisHistoryManager:
         history_list_from_gemini - это список объектов google.genai.types.Message.
         Преобразуем их в ваш формат словарей.
         """
-        st.info(f"[{user_id}] Попытка сохранения истории в Redis. Длина полученной истории от Gemini: {len(history_list_from_gemini)}")
         user_id_str = str(user_id)
         
-        # Преобразуем объекты history_list_from_gemini (types.Message) в ваш формат словарей
         serializable_history = []
         for message in history_list_from_gemini:
             msg_dict = {"role": message.role}
             parts_data = []
-            if hasattr(message, 'parts'): # Проверяем наличие атрибута 'parts'
+            if hasattr(message, 'parts'):
                 for part in message.parts:
                     if hasattr(part, 'text') and part.text is not None:
                         parts_data.append({"text": part.text})
                     elif hasattr(part, 'file_data') and part.file_data is not None:
-                        # Сохраняем информацию о файле, как она приходит от API
                         parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
-                    # Добавьте другие типы частей, если они могут быть в истории (напр., FunctionCall, FunctionResponse)
-                    # if hasattr(part, 'function_call'):
-                    #     parts_data.append({"function_call": part.function_call.to_dict()})
-                    # if hasattr(part, 'function_response'):
-                    #     parts_data.append({"function_response": part.function_response.to_dict()})
                     else:
-                        st.warning(f"[{user_id}] Неизвестный/необрабатываемый тип части сообщения при сериализации: {type(part)}. Пропускаем или преобразуем в строку.")
-                        # В качестве запасного варианта можно попробовать преобразовать в строку
                         parts_data.append({"unsupported_content": str(part)})
                 msg_dict["parts"] = parts_data
-            # Если сообщение не имеет атрибута 'parts', но имеет 'text' (например, старые форматы)
             elif hasattr(message, 'text') and message.text is not None:
                 msg_dict["parts"] = [{"text": message.text}]
             
@@ -289,41 +282,32 @@ class RedisHistoryManager:
         try:
             json_data = json.dumps(serializable_history, ensure_ascii=False)
             self.r.set(user_id_str, json_data)
-            st.success(f"[{user_id}] История успешно сохранена в Redis!")
         except Exception as e:
-            st.error(f"[{user_id}] Ошибка при сохранении истории в Redis: {e}")
+            st.error(f"Ошибка при сохранении истории в Redis: {e}")
 
     def load_history(self, user_id):
         """
         Загружает историю чата для пользователя из Redis.
         Возвращает список словарей, как они были сохранены.
-        Gemini API ожидает список словарей или types.Message объектов для history.
         """
-        st.info(f"[{user_id}] Попытка загрузки истории из Redis.")
         user_id_str = str(user_id)
         raw = self.r.get(user_id_str)
         if raw:
             try:
                 loaded_history_dicts = json.loads(raw)
-                st.success(f"[{user_id}] Успешно загружено {len(loaded_history_dicts)} сообщений из Redis.")
                 return loaded_history_dicts
             except json.JSONDecodeError as e:
-                st.error(f"[{user_id}] Ошибка декодирования JSON при загрузке истории: {e}. История будет пустой.")
+                # Если ошибка десериализации, возвращаем пустую историю
+                st.error(f"Ошибка декодирования JSON при загрузке истории: {e}. История будет пустой.")
                 return []
             except Exception as e:
-                st.error(f"[{user_id}] Неожиданная ошибка при загрузке истории: {e}. История будет пустой.")
+                st.error(f"Неожиданная ошибка при загрузке истории: {e}. История будет пустой.")
                 return []
-        st.info(f"[{user_id}] В Redis не найдено истории для этого пользователя. Начинаем с пустой истории.")
         return []
 
     def clear_history(self, user_id):
-        st.info(f"[{user_id}] Попытка очистить историю в Redis.")
         user_id_str = str(user_id)
         result = self.r.delete(user_id_str)
-        if result == 1:
-            st.success(f"[{user_id}] История успешно очищена из Redis.")
-        else:
-            st.warning(f"[{user_id}] История для очистки в Redis не найдена.")
         return result == 1
 
 # Новый класс AI, работающий с Redis
@@ -331,32 +315,25 @@ class AI:
     def __init__(self, user_id, redis_manager):
         self.user_id = user_id
         self.redis_manager = redis_manager
-        self.model = "gemini-2.5-flash-preview-05-20" # Модель по умолчанию
-        self.thinking_budget = 0 # Бюджет обдумывания по умолчанию
+        self.model = "gemini-2.5-flash-preview-05-20"
+        self.thinking_budget = 0
 
-        # Загружаем историю из Redis при инициализации AI объекта.
-        # Теперь self.history хранит список словарей.
         self.history = self.redis_manager.load_history(self.user_id)
-        st.info(f"[{user_id}] AI инициализирован. Загружено {len(self.history)} сообщений из Redis.")
         
-        # Инициализация чата
         self._create_chat_session()
     
     def _create_chat_session(self):
-        """Внутренняя вспомогательная функция для создания/пересоздания объекта чата."""
-        st.info(f"[{self.user_id}] Создание/пересоздание чат-сессии. Модель: {self.model}, бюджет обдумывания: {self.thinking_budget}, длина истории: {len(self.history)}")
         self.chat = client.chats.create(
             model=self.model,
             config=types.GenerateContentConfig(
                 safety_settings=safety_settings,
-                system_instruction=din_prompt, # Используем din_prompt как основную инструкцию
+                system_instruction=din_prompt,
                 thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
             ),
-            history=self.history # Передаем список словарей, как он загружен из Redis
+            history=self.history
         )
     
     def set_chat_settings(self, model: str = None, thinking: bool = None):
-        """Обновляет настройки чата (модель, режим обдумывания) и пересоздает чат."""
         settings_changed = False
 
         if model is not None:
@@ -372,88 +349,66 @@ class AI:
                 settings_changed = True
         
         if settings_changed:
-            self._create_chat_session() # Пересоздаем чат с новыми настройками
+            self._create_chat_session()
 
     def send_message(self, message=None, file=None):
         if not message and not file:
             return "Необходимо передать либо сообщение, либо файл."
         
-        st.info(f"[{self.user_id}] Отправка сообщения. Текущая длина истории чата (до отправки): {len(self.chat.get_history())}")
-        response_text = "" # Инициализация для возврата
+        response_text = ""
         try:
-            if file: # Если передан файл (вероятно, Streamlit UploadedFile)
-                if hasattr(file, 'getvalue') and hasattr(file, 'type'): # Проверяем, что это UploadedFile
+            if file:
+                if hasattr(file, 'getvalue') and hasattr(file, 'type'):
                     gemini_file_blob = types.Blob(mime_type=file.type, data=file.getvalue())
-                    st.info(f"[{self.user_id}] Обрабатывается загруженный файл: {file.type}, размер: {len(file.getvalue())} байт")
                     if "audio/" in file.type:
                         response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", gemini_file_blob])
                     else:
                         response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", gemini_file_blob])
                 else:
-                    # Если 'file' уже является genai.types.File или genai.types.Blob
-                    st.info(f"[{self.user_id}] Обрабатывается существующий объект файла (не Streamlit UploadedFile): {type(file)}")
                     if hasattr(file, 'mime_type') and "audio/" in file.mime_type:
                         response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", file])
                     else:
                         response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", file])
-            else: # Если нет файла, просто текстовое сообщение
+            else:
                 response = self.chat.send_message(message)
             
-            response_text = response.text # Получаем текст ответа
+            response_text = response.text
             
-            # ОЧЕНЬ ВАЖНО: Получаем актуальную историю из чата (она будет в формате types.Message)
-            # и сохраняем ее в Redis через redis_manager, который преобразует ее в словари.
             self.history = self.chat.get_history() # Возвращает список types.Message
-            st.info(f"[{self.user_id}] История обновлена из чата. Новая длина (объектов types.Message): {len(self.history)}")
             self.redis_manager.save_history(self.user_id, self.history)
 
             return response_text
         except Exception as e:
-            st.error(f"[{self.user_id}] Произошла ошибка при отправке сообщения: {e}")
+            st.error(f"Произошла ошибка при отправке сообщения: {e}")
             return f"Извините, произошла ошибка. Пожалуйста, попробуйте еще раз. Детали ошибки: {e}"
 
     def get_history(self):
-        # Возвращаем текущую историю из AI объекта (она будет в формате types.Message,
-        # так как это результат self.chat.get_history() после send_message)
-        # Убедимся, что self.history всегда отражает актуальное состояние чата.
         self.history = self.chat.get_history()
         return self.history
     
     def count_tokens(self):
-        # Перед подсчетом токенов убедимся, что history актуальна
         self.history = self.chat.get_history()
         try:
             self.tokens = client.models.count_tokens(model=self.model, contents=self.history)
             return self.tokens.total_tokens
         except Exception as e:
-            st.error(f"[{self.user_id}] Ошибка при подсчете токенов: {e}")
-            return -1 # Возвращаем -1 или другое значение при ошибке
+            # st.error(f"Ошибка при подсчете токенов: {e}") # Отключено по запросу
+            return -1
 
     def upload_file(self, file_path):
-        # Эта функция не используется в текущем Streamlit приложении напрямую.
-        # Она полезна, если вы загружаете файлы на Google Cloud Storage или аналогично,
-        # а затем передаете URI в Gemini API.
-        st.warning(f"[{self_user_id}] Метод upload_file используется для загрузки на сервер GenAI Files. Убедитесь, что это соответствует вашему сценарию.")
         sha256 = sha256_hash(file_path)
         for f in client.files.list():
             if f.display_name == sha256:
                 file = client.files.get(name=f.name)
-                st.info(f"[{self_user_id}] Файл {sha256} уже загружен.")
                 return file
         
         file = client.files.upload(file=file_path, config=(types.UploadFileConfig(display_name=sha256)))
-        st.success(f"[{self_user_id}] Файл {sha256} загружен.")
         return file
     
     def clear_history(self):
-        """
-        Очищает историю сообщений конкретного пользователя в Redis и в текущем AI объекте.
-        """
-        st.info(f"[{self.user_id}] Вызов clear_history для пользователя.")
-        self.redis_manager.clear_history(self.user_id) # Очищаем в Redis
-        self.history = [] # Очищаем внутреннюю историю AI объекта (список словарей)
-        self._create_chat_session() # Пересоздаем чат с пустой историей
-        st.success(f"[{self.user_id}] История чата в AI объекте очищена.")
+        self.redis_manager.clear_history(self.user_id)
+        self.history = []
+        self._create_chat_session()
         return True
 
 # --- Streamlit UI ---
@@ -473,22 +428,14 @@ if "redis_manager" not in st.session_state:
 redis_manager = st.session_state.redis_manager
 
 # Инициализация AI объекта при первом запуске или смене пользователя
-# Передаем redis_manager в конструктор AI
 if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
     st.session_state.user_id = user_id
-    st.session_state.ai = AI(user_id, redis_manager) # Передаем redis_manager
+    st.session_state.ai = AI(user_id, redis_manager)
 
-    # При загрузке новой сессии/смене пользователя, загружаем историю из Redis
-    # и заполняем st.session_state.messages для отображения.
     st.session_state.messages = []
-    # AI объект уже загрузил историю из Redis в self.history.
-    # Эта история (self.history) теперь содержит список словарей, как они были сохранены в Redis.
     loaded_history_for_display = st.session_state.ai.history # Получаем список словарей
     
-    st.info(f"[{user_id}] Начальная загрузка: {len(loaded_history_for_display)} сообщений из истории AI для отображения в UI.")
-    
     for msg_dict in loaded_history_for_display:
-        # Системные инструкции не предназначены для отображения в чате.
         if msg_dict.get("role") == "system":
             continue
             
@@ -498,16 +445,15 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
             if "text" in part_dict:
                 content_parts.append(part_dict["text"])
             elif "file_data" in part_dict:
-                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") # Отображаем заглушку для файла
-            else:
-                st.warning(f"[{user_id}] Пропускаем неизвестный тип части сообщения для отображения (словарь): {part_dict}")
+                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
+            elif "unsupported_content" in part_dict:
+                 content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
         
         content_to_display = "".join(content_parts)
         
-        # Маппинг ролей Gemini на роли Streamlit
         display_role = "user" if msg_dict.get("role") == "user" else "assistant"
         
-        if content_to_display: # Добавляем сообщение только если есть текст для отображения
+        if content_to_display:
             st.session_state.messages.append({"role": display_role, "content": content_to_display})
 
 # После инициализации, получаем ссылку на AI объект из session_state
@@ -591,22 +537,16 @@ if user_input:
         response = ai.send_message(user_input)
     
     # Добавляем ответ AI в st.session_state.messages для отображения
-    # Роль "model" из Gemini API на стороне Streamlit будет "assistant"
     st.session_state.messages.append({"role": "assistant", "content": response})
     with st.chat_message("assistant"):
         st.markdown(response)
     
-    # Streamlit автоматически перерендерит страницу после этого, обновляя UI
-
 # --- Выбор режима (Selectbox) и кнопка очистки истории (иконка) ---
 
-# Создаем две колонки: для Selectbox и для кнопки "Очистить историю"
-# Пропорции: 0.2 для selectbox, 0.8 для кнопки.
 col_think, col_clear = st.columns([0.2, 0.8]) 
 
 with col_think:
     think_mode_options = ["NoThink", "Think"]
-    # Получаем текущий режим обдумывания из AI объекта
     current_think_mode_index = 1 if ai.thinking_budget > 0 else 0
     
     think_mode_choice = st.selectbox(
@@ -614,18 +554,14 @@ with col_think:
         options=think_mode_options,
         index=current_think_mode_index,
         key="think_mode_selectbox_bottom",
-        label_visibility="collapsed" # Скрываем надпись "Режим:" для компактности
+        label_visibility="collapsed"
     )
 
 with col_clear:
-    # Кнопка для очистки истории с иконкой "trash"
     if st.button("🗑️", key="clear_history_button_bottom", help="Очистить историю"):
-        ai.clear_history() # Вызываем метод очистки у AI объекта
-        st.session_state.messages = [] # Очищаем и отображаемую историю в Streamlit
-        st.success("Интерфейс чата также очищен.")
-        st.rerun() # Перезапускаем, чтобы UI обновился корректно и чат был пуст
+        ai.clear_history()
+        st.session_state.messages = []
+        st.rerun()
 
 # Применяем выбранные настройки
-# Модель всегда будет "flash", так как выбор модели убран из UI
-# Обновляем настройки в AI объекте. AI сам пересоздаст внутренний чат при необходимости.
 ai.set_chat_settings(model="flash", thinking=(think_mode_choice == "Think"))
