@@ -27,8 +27,6 @@ api_key = st.secrets["GOOGLE_API_KEY"]
 if "genai_client" not in st.session_state:
     st.session_state.genai_client = genai.Client(api_key=api_key)
 client = st.session_state.genai_client
-tools = []
-tools.append(Tool(url_context=types.UrlContext))
 # Глобальный промпт для системной инструкции (без изменений)
 din_prompt = """<System_Prompt>
 
@@ -363,7 +361,7 @@ class AI:
             model=self.model,
             config=types.GenerateContentConfig(
                 safety_settings=safety_settings,
-                tools=tools,
+                tools=[Tool(url_context=types.UrlContext)],
                 system_instruction=din_prompt,
                 thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
             ),
