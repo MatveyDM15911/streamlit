@@ -259,6 +259,36 @@ def truncate_chat_name(text: str) -> str:
         return text[:MAX_CHAT_NAME_LENGTH] + "..."
     return text
 
+# Вспомогательная функция для преобразования словарей истории в объекты types.Message
+def convert_dict_to_gemini_message(history_dicts: list) -> list[types.Message]:
+    gemini_history = []
+    for msg_dict in history_dicts:
+        role = msg_dict.get("role")
+        parts = []
+        for part_data in msg_dict.get("parts", []):
+            if "text" in part_data:
+                parts.append(types.Part(text=part_data["text"]))
+            # Если у вас были другие типы контента, такие как 'file_data',
+            # их нужно будет десериализовать обратно в соответствующий types.Part.
+            # В данном случае, мы сохраняем только 'text' и 'unsupported_content' для отображения,
+            # но для отправки в API нужна правильная структура Google API.
+            # Для 'unsupported_content' здесь мы просто пропускаем, чтобы не вызвать ошибку
+            # при попытке создать types.Part из произвольной строки.
+            elif "file_data" in part_data and "uri" in part_data.get("file_data", {}):
+                # Если вы ранее сохраняли URI файлов, можете воссоздать FileData
+                parts.append(types.Part(file_data=types.FileData(mime_type=part_data["file_data"]["mime_type"], uri=part_data["file_data"]["uri"])))
+            elif "unsupported_content" in part_data:
+                # Пропускаем неподдерживаемый контент, чтобы не сломать API
+                pass
+        
+        # Убедимся, что роль соответствует ожидаемым 'user'/'model'
+        if role == 'user' or role == 'model': # 'assistant' в API фактически 'model'
+            gemini_history.append(types.Message(role=role, parts=parts))
+        elif role == 'assistant': # Преобразуем 'assistant' в 'model' для API
+             gemini_history.append(types.Message(role='model', parts=parts))
+
+    return gemini_history
+
 # Класс для управления историей в Redis
 class RedisHistoryManager:
     def __init__(self):
@@ -281,7 +311,8 @@ class RedisHistoryManager:
         """
         Сохраняет историю чата для пользователя в Redis под заданным именем чата.
         history_list_from_gemini - это список объектов google.genai.types.Message.
-        Преобразуем их в ваш формат словарей, игнорируя файловые части.
+        Преобразуем их в ваш формат словарей, игнорируя файловые части, если они нетекстовые
+        или если их URI уже неактуальны.
         """
         user_id_str = str(user_id)
         
@@ -293,10 +324,15 @@ class RedisHistoryManager:
                 for part in message.parts:
                     if hasattr(part, 'text') and part.text is not None:
                         parts_data.append({"text": part.text})
+                    elif hasattr(part, 'file_data') and part.file_data is not None:
+                        # Внимание: URI файлов могут быть временными и неактуальными после сессии.
+                        # Сохраняем только для демонстрации, что они были. Для реального
+                        # использования, нужна система управления файлами.
+                        parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
                     else:
                         parts_data.append({"unsupported_content": str(part)})
                 msg_dict["parts"] = parts_data
-            elif hasattr(message, 'text') and message.text is not None:
+            elif hasattr(message, 'text') and message.text is not None: # Запасной вариант, если message сам текст
                 msg_dict["parts"] = [{"text": message.text}]
             
             serializable_history.append(msg_dict)
@@ -351,7 +387,10 @@ class AI:
         self.model = "gemini-2.5-flash-preview-05-20"
         self.thinking_budget = 0 # По умолчанию без thinking budget
 
-        self.history = self.redis_manager.load_chat_history(self.user_id, self.chat_name)
+        # Загружаем историю как словари
+        loaded_raw_history_dicts = self.redis_manager.load_chat_history(self.user_id, self.chat_name)
+        # Преобразуем словари в объекты types.Message перед созданием сессии
+        self.history = convert_dict_to_gemini_message(loaded_raw_history_dicts)
         
         self._create_chat_session()
     
@@ -364,7 +403,7 @@ class AI:
                 system_instruction=din_prompt,
                 thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
             ),
-            history=self.history # Передаем историю
+            history=self.history # Теперь self.history содержит types.Message
         )
     
     def set_chat_settings(self, model: str = None, thinking: bool = None):
@@ -547,12 +586,14 @@ if "ai" not in st.session_state or \
 
     # Загружаем сообщения для отображения, если AI объект только что создан/пересоздан
     st.session_state.messages = []
-    loaded_history_for_display = st.session_state.ai.history 
+    # Важно: здесь мы используем loaded_raw_history_dicts, чтобы получить сырые словари для UI
+    # AI.__init__ уже преобразовал их в types.Message для работы с API
+    loaded_raw_history_dicts = redis_manager.load_chat_history(user_id, st.session_state.current_chat_name)
     
     # Обновляем is_first_message при каждой загрузке/переключении чата
-    st.session_state.is_first_message = not bool(loaded_history_for_display)
+    st.session_state.is_first_message = not bool(loaded_raw_history_dicts)
 
-    for msg_dict in loaded_history_for_display:
+    for msg_dict in loaded_raw_history_dicts: # Перебираем сырые словари для отображения
         if msg_dict.get("role") == "system":
             continue
             
@@ -561,16 +602,17 @@ if "ai" not in st.session_state or \
         for part_dict in parts_list:
             if "text" in part_dict:
                 content_parts.append(part_dict["text"])
+            elif "file_data" in part_dict: 
+                # Для отображения файловых данных в UI, используем их метаданные
+                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
+            elif "unsupported_content" in part_dict:
+                content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
             else:
-                if "file_data" in part_dict: 
-                    content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
-                elif "unsupported_content" in part_dict:
-                    content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
-                else:
-                    content_parts.append(f"[[Неизвестный контент]]")
+                content_parts.append(f"[[Неизвестный контент]]")
         
         content_to_display = "".join(content_parts)
         
+        # 'assistant' преобразуем в 'model' для API, но для UI можно оставить 'assistant'
         display_role = "user" if msg_dict.get("role") == "user" else "assistant"
         
         if content_to_display:
@@ -671,12 +713,28 @@ with st.sidebar:
                 if st.button(f"💬 {chat_name}", key=f"chat_{chat_name}", use_container_width=True):
                     st.session_state.current_chat_name = chat_name
                     # Force re-initialization of AI object and message loading
-                    st.session_state.ai = AI(user_id, chat_name, redis_manager)
+                    st.session_state.ai = AI(user_id, chat_name, redis_manager) # AI.__init__ теперь сам конвертирует историю
                     st.session_state.messages = [] # Clear current UI messages
-                    # Load messages from the newly selected chat history
-                    loaded_history_for_display = st.session_state.ai.history
+                    # Load raw dictionaries for display purposes
+                    loaded_raw_history_dicts = redis_manager.load_chat_history(user_id, st.session_state.current_chat_name)
+                    
                     # Обновляем is_first_message при каждой загрузке/переключении чата
-                    st.session_state.is_first_message = not bool(loaded_history_for_display)
+                    st.session_state.is_first_message = not bool(loaded_raw_history_dicts)
+
+                    for msg_dict in loaded_raw_history_dicts:
+                        if msg_dict.get("role") == "system": continue
+                        content_parts = []
+                        parts_list = msg_dict.get("parts", [])
+                        for part_dict in parts_list:
+                            if "text" in part_dict:
+                                content_parts.append(part_dict["text"])
+                            elif "file_data" in part_dict: 
+                                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
+                            elif "unsupported_content" in part_dict:
+                                content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
+                            else:
+                                content_parts.append(f"[[Неизвестный контент]]")
+                        st.session_state.messages.append({"role": "user" if msg_dict.get("role") == "user" else "assistant", "content": "".join(content_parts)})
                     st.rerun()
     else:
         st.info("Пока нет сохраненных диалогов. Начните новый!")
