@@ -555,7 +555,6 @@ if "ai" not in st.session_state or \
 ai = st.session_state.ai
 
 # --- UI for current chat ---
-st.title(f"Чат {username}")
 st.subheader(f"Текущий диалог: **{st.session_state.current_chat_name}**")
 
 
