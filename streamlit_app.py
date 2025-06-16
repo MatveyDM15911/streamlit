@@ -29,7 +29,6 @@ if "genai_client" not in st.session_state:
 client = st.session_state.genai_client
 tools = []
 tools.append(Tool(url_context=types.UrlContext))
-tools.append(Tool(google_search=types.GoogleSearch))
 # Глобальный промпт для системной инструкции (без изменений)
 din_prompt = """<System_Prompt>
 
