@@ -534,10 +534,6 @@ if "is_first_message" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Добавляем флаг для Ctrl+Enter
-if "send_message_triggered" not in st.session_state:
-    st.session_state.send_message_triggered = False
-
 # Переинициализация AI объекта, если пользователь или чат изменились
 # Это должно быть после инициализации всех session_state переменных
 redis_manager = st.session_state.redis_manager # Ссылка на менеджер из session_state
@@ -664,7 +660,6 @@ with st.sidebar:
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
         st.session_state.messages = []
         st.session_state.is_first_message = True # Это новый пустой чат
-        st.session_state.send_message_triggered = False # Сброс триггера
         st.rerun()
 
     st.markdown("---")
@@ -684,7 +679,6 @@ with st.sidebar:
                     loaded_history_for_display = st.session_state.ai.history
                     # Обновляем is_first_message при каждой загрузке/переключении чата
                     st.session_state.is_first_message = not bool(loaded_history_for_display)
-                    st.session_state.send_message_triggered = False # Сброс триггера
 
                     for msg_dict in loaded_history_for_display:
                         if msg_dict.get("role") == "system": continue
@@ -737,7 +731,7 @@ for i, message in enumerate(st.session_state.messages):
 # --- Форма для ввода текста и загрузки файла ---
 with st.form("chat_form", clear_on_submit=True):
     # Определяем метку для поля ввода в зависимости от флага is_first_message
-    input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос (Ctrl+Enter для отправки)"
+    input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос (Ctrl+Enter для переноса строки, Enter для отправки)"
     
     # Используем st.text_area вместо st.text_input
     user_message = st.text_area(input_label, key="user_text_area", height=80) # Устанавливаем высоту по умолчанию
@@ -750,45 +744,40 @@ with st.form("chat_form", clear_on_submit=True):
 
     submit_button = st.form_submit_button("Отправить")
 
-    # --- JavaScript для отслеживания Ctrl+Enter ---
-    # Важно: этот HTML-компонент должен быть после st.text_area, чтобы его id был доступен
-    # В Streamlit id элементов генерируются динамически, поэтому лучше найти textarea по атрибуту
-    # или использовать custom id, если это возможно. text_area имеет data-testid="stFormTextarea"
+    # --- JavaScript для отслеживания Enter и Ctrl+Enter ---
+    # Этот JS код должен быть в той же форме, что и textarea и кнопка submit
     
-    js_code = f"""
+    js_code = """
     <script>
         const textarea = document.querySelector('[data-testid="stFormTextarea"] textarea');
-        if (textarea) {{
-            textarea.addEventListener('keydown', function(e) {{
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
-                    // Устанавливаем значение в Streamlit Session State
-                    // Streamlit.setComponentValue("send_message_triggered_key", true);
-                    // Вместо прямого вызова компонента, мы можем симулировать клик по кнопке отправки
-                    // (если кнопка видна и находится в той же форме)
-                    const form = textarea.closest('[data-testid="stForm"]');
-                    if (form) {{
-                        const submitButton = form.querySelector('button[kind="primary"]'); // Ищем главную кнопку отправки
-                        if (submitButton) {{
-                            submitButton.click();
-                            e.preventDefault(); // Предотвращаем стандартное поведение Enter (новую строку)
-                        }}
-                    }}
-                }}
-            }});
-        }}
+        if (textarea) {
+            textarea.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    if (e.ctrlKey || e.metaKey) { // Ctrl+Enter или Cmd+Enter (для переноса строки)
+                        // Позволяем стандартное поведение (добавление новой строки)
+                        // console.log('Ctrl+Enter pressed - allowing newline');
+                    } else { // Просто Enter (для отправки)
+                        e.preventDefault(); // Предотвращаем стандартное поведение Enter (новую строку)
+                        // Симулируем клик по кнопке отправки
+                        const form = textarea.closest('[data-testid="stForm"]');
+                        if (form) {
+                            const submitButton = form.querySelector('button[kind="primary"]'); 
+                            if (submitButton) {
+                                submitButton.click();
+                                // console.log('Enter pressed - submitting form');
+                            }
+                        }
+                    }
+                }
+            });
+        }
     </script>
     """
-    components.html(js_code, height=0, width=0) # height/width 0, чтобы не занимал место
+    components.html(js_code, height=0, width=0, key="js_for_enter_ctrl_enter") # Добавил key для надежности
 
     # --- Логика отправки сообщения ---
-    # Мы полагаемся на submit_button.click(), вызванный JS при Ctrl+Enter
-    # или на прямой клик пользователя по кнопке "Отправить"
-    if submit_button: # submit_button.click() устанавливает submit_button в True
+    if submit_button: 
         if user_message or (uploaded_file and not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME)):
-            # Очищаем триггер, если он был установлен (хотя submit_button уже сбрасывается)
-            st.session_state.send_message_triggered = False 
-
-            # Комбинируем сообщение для отображения
             display_content = user_message if user_message else ""
             if uploaded_file: 
                 if display_content:
@@ -796,21 +785,17 @@ with st.form("chat_form", clear_on_submit=True):
                 else:
                     display_content = f"Загружен файл: {uploaded_file.name}, {uploaded_file.type}"
 
-            # Добавляем сообщение пользователя в UI
             st.session_state.messages.append({"role": "user", "content": display_content})
             with st.chat_message("user"):
                 st.markdown(display_content)
 
-            # Отправляем сообщение AI и получаем ответ
             with st.spinner("Думаю..."):
                 response = ai.send_message(message=user_message, file=uploaded_file)
             
-            # После успешной отправки сообщения, это уже не первое сообщение в чате
             st.session_state.is_first_message = False
 
-            # Добавляем ответ AI в UI
             st.session_state.messages.append({"role": "assistant", "content": response})
-            st.rerun() # Явный rerun для немедленного отображения нового сообщения
+            st.rerun() 
         else:
             st.warning("Пожалуйста, введите запрос или загрузите файл (если доступно).")
 
