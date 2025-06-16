@@ -534,6 +534,7 @@ if "is_first_message" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+
 # Переинициализация AI объекта, если пользователь или чат изменились
 # Это должно быть после инициализации всех session_state переменных
 redis_manager = st.session_state.redis_manager # Ссылка на менеджер из session_state
@@ -729,75 +730,76 @@ for i, message in enumerate(st.session_state.messages):
             st.markdown(message["content"])
 
 # --- Форма для ввода текста и загрузки файла ---
-with st.form("chat_form", clear_on_submit=True):
-    # Определяем метку для поля ввода в зависимости от флага is_first_message
-    input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос (Ctrl+Enter для переноса строки, Enter для отправки)"
-    
-    # Используем st.text_area вместо st.text_input
-    user_message = st.text_area(input_label, key="user_text_area", height=80) # Устанавливаем высоту по умолчанию
+# Оборачиваем форму в контейнер, чтобы JS мог найти кнопку отправки
+chat_input_container = st.container() 
+with chat_input_container:
+    with st.form("chat_form", clear_on_submit=True):
+        # Определяем метку для поля ввода в зависимости от флага is_first_message
+        input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос (Ctrl+Enter для переноса строки, Enter для отправки)"
+        
+        user_message = st.text_area(input_label, key="user_text_area", height=80) 
 
-    # Скрываем file_uploader, если это первый ввод названия чата
-    if not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME):
-        uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") 
-    else:
-        uploaded_file = None 
-
-    submit_button = st.form_submit_button("Отправить")
-
-    # --- JavaScript для отслеживания Enter и Ctrl+Enter ---
-    # Этот JS код должен быть в той же форме, что и textarea и кнопка submit
-    
-    js_code = """
-    <script>
-        const textarea = document.querySelector('[data-testid="stFormTextarea"] textarea');
-        if (textarea) {
-            textarea.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter') {
-                    if (e.ctrlKey || e.metaKey) { // Ctrl+Enter или Cmd+Enter (для переноса строки)
-                        // Позволяем стандартное поведение (добавление новой строки)
-                        // console.log('Ctrl+Enter pressed - allowing newline');
-                    } else { // Просто Enter (для отправки)
-                        e.preventDefault(); // Предотвращаем стандартное поведение Enter (новую строку)
-                        // Симулируем клик по кнопке отправки
-                        const form = textarea.closest('[data-testid="stForm"]');
-                        if (form) {
-                            const submitButton = form.querySelector('button[kind="primary"]'); 
-                            if (submitButton) {
-                                submitButton.click();
-                                // console.log('Enter pressed - submitting form');
-                            }
-                        }
-                    }
-                }
-            });
-        }
-    </script>
-    """
-    components.html(js_code, height=0, width=0, key="js_for_enter_ctrl_enter") # Добавил key для надежности
-
-    # --- Логика отправки сообщения ---
-    if submit_button: 
-        if user_message or (uploaded_file and not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME)):
-            display_content = user_message if user_message else ""
-            if uploaded_file: 
-                if display_content:
-                    display_content += f" (файл: {uploaded_file.name}, {uploaded_file.type})"
-                else:
-                    display_content = f"Загружен файл: {uploaded_file.name}, {uploaded_file.type}"
-
-            st.session_state.messages.append({"role": "user", "content": display_content})
-            with st.chat_message("user"):
-                st.markdown(display_content)
-
-            with st.spinner("Думаю..."):
-                response = ai.send_message(message=user_message, file=uploaded_file)
-            
-            st.session_state.is_first_message = False
-
-            st.session_state.messages.append({"role": "assistant", "content": response})
-            st.rerun() 
+        # Скрываем file_uploader, если это первый ввод названия чата
+        if not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME):
+            uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") 
         else:
-            st.warning("Пожалуйста, введите запрос или загрузите файл (если доступно).")
+            uploaded_file = None 
+
+        submit_button = st.form_submit_button("Отправить")
+
+# --- JavaScript для отслеживания Enter и Ctrl+Enter ---
+# ВЫНЕСЕН ЗА ПРЕДЕЛЫ ФОРМЫ!
+js_code = """
+<script>
+    // Ищем textarea по его data-testid
+    const textarea = document.querySelector('[data-testid="stFormTextarea"] textarea');
+    // Ищем кнопку отправки по её kind (primary) внутри формы
+    const submitButton = document.querySelector('[data-testid="stForm"] button[kind="primary"]');
+
+    if (textarea && submitButton) {
+        textarea.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                if (e.ctrlKey || e.metaKey) { // Ctrl+Enter или Cmd+Enter (для переноса строки)
+                    // Позволяем стандартное поведение (добавление новой строки)
+                    // console.log('Ctrl+Enter pressed - allowing newline');
+                } else { // Просто Enter (для отправки)
+                    e.preventDefault(); // Предотвращаем стандартное поведение Enter (новую строку)
+                    submitButton.click(); // Симулируем клик по кнопке отправки
+                    // console.log('Enter pressed - submitting form');
+                }
+            }
+        });
+    }
+</script>
+"""
+# Внедряем HTML/JS компонент. Уникальный key для него обязателен.
+components.html(js_code, height=0, width=0, key="js_for_enter_ctrl_enter_behavior") 
+
+
+# --- Логика отправки сообщения ---
+# Логика остается прежней, так как она срабатывает при submit_button True
+if submit_button: 
+    if user_message or (uploaded_file and not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME)):
+        display_content = user_message if user_message else ""
+        if uploaded_file: 
+            if display_content:
+                display_content += f" (файл: {uploaded_file.name}, {uploaded_file.type})"
+            else:
+                display_content = f"Загружен файл: {uploaded_file.name}, {uploaded_file.type}"
+
+        st.session_state.messages.append({"role": "user", "content": display_content})
+        with st.chat_message("user"):
+            st.markdown(display_content)
+
+        with st.spinner("Думаю..."):
+            response = ai.send_message(message=user_message, file=uploaded_file)
+        
+        st.session_state.is_first_message = False
+
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        st.rerun() 
+    else:
+        st.warning("Пожалуйста, введите запрос или загрузите файл (если доступно).")
 
 
 # --- Выбор режима (Selectbox) и кнопка очистки истории (иконка) ---
