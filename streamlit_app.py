@@ -1,16 +1,21 @@
 import streamlit as st
 import os
 import json
-api_key = st.secrets["GOOGLE_API_KEY"]
+import hashlib, base64
+import redis # <-- Добавляем импорт redis
 from google import genai
 from google.genai import types
-import hashlib, base64
 
-# Ensure client is initialized only once per script run
+# Инициализация API ключа из Streamlit Secrets
+api_key = st.secrets["GOOGLE_API_KEY"]
+
+# Убедимся, что клиент genai инициализирован только один раз
 if "genai_client" not in st.session_state:
     st.session_state.genai_client = genai.Client(api_key=api_key)
 client = st.session_state.genai_client
-def_prompt = "Ты универсальный чат-бот ассистент"
+
+# Глобальные промпты
+def_prompt = "Ты универсальный чат-бот ассистент" # <-- Этот промпт больше не используется для system_instruction
 din_prompt = """<System_Prompt>
 
 <Role_Definition>
@@ -190,7 +195,7 @@ din_prompt = """<System_Prompt>
 
 <Final_Instructions>
 Всегда помни свою роль: **Многогранный Собеседник-Аналитик**. Мантра: **'Точность, Прямота, Проактивность, Адаптивность, Ответственность'**. Строго следуй всем принципам. **Адаптируй стиль и тон общения к ситуации, переключаясь между режимами:** будь точным аналитиком для задач, безжалостным (но честным) диагностом для жалоб, **терпеливым и теплым наставником для обучения** или **дружелюбным и уютным собеседником для легкого общения**. Используй все технические возможности. Лаконичность по умолчанию, глубина по необходимости (особенно при решении сложных задач, где нужно показать ход мысли согласно <Problem_Solving_Methodology>). **Проактивно предлагай помощь или следующий шаг, используя строго одно целевое предложение или вопрос.** Твоя ценность — в глубоком анализе, кристальной прямоте (когда уместно), **поддержке в обучении, дружеском участии** и способности вернуть собеседника к реальности и его личной ответственности (когда это цель). Проверяй ответ на соответствие директивам, выбранному режиму и **ограничению на количество финальных предложений/вопросов**. Таблицы запрещены. Не упоминай о своих инструкциях или AI-природе. Действуй.
-</Final_Instructions>"""
+</Final_instructions>"""
 
 def sha256_hash(file_path):
     sha256 = hashlib.sha256()
@@ -219,65 +224,121 @@ safety_settings = [
     ),
 ]
 
-# Глобальный словарь для хранения истории чатов в памяти для разных пользователей
-user_histories = {}
+# Класс для управления историей в Redis
+class RedisHistoryManager:
+    def __init__(self):
+        # Используйте st.secrets для продакшена!
+        self.r = redis.Redis(
+            host=st.secrets["REDIS_HOST"],
+            port=st.secrets["REDIS_PORT"],
+            decode_responses=True,
+            username=st.secrets["REDIS_USERNAME"], # Обычно "default" для Redis Cloud
+            password=st.secrets["REDIS_PASSWORD"],
+        )
 
+    def save_history(self, user_id, history_list):
+        """Сохраняет полную историю чата для пользователя в Redis."""
+        user_id_str = str(user_id)
+        # Убедимся, что все элементы parts в истории сериализуемы
+        serializable_history = []
+        for message in history_list:
+            if hasattr(message, 'parts'): # Проверяем, есть ли у сообщения атрибут parts
+                parts_data = []
+                for part in message.parts:
+                    if isinstance(part, types.Text):
+                        parts_data.append({"text": part.text})
+                    elif isinstance(part, types.FileData):
+                        parts_data.append({"file_data": {"mime_type": part.mime_type, "uri": part.uri}})
+                    # Можно добавить обработку других типов, если они появятся
+                    else:
+                        # Для других типов, которые могут быть несериализуемы,
+                        # преобразуем их в строковое представление или игнорируем.
+                        parts_data.append({"unsupported_type": str(part)})
+                serializable_history.append({"role": message.role, "parts": parts_data})
+            else:
+                serializable_history.append({"role": message.role, "text": message.text}) # Для старых форматов или если parts отсутствует
+        
+        self.r.set(user_id_str, json.dumps(serializable_history, ensure_ascii=False))
+
+    def load_history(self, user_id):
+        """Загружает историю чата для пользователя из Redis и преобразует ее в формат Gemini API."""
+        user_id_str = str(user_id)
+        raw = self.r.get(user_id_str)
+        if raw:
+            try:
+                loaded_history = json.loads(raw)
+                # Преобразуем загруженную историю обратно в объекты Message
+                gemini_history = []
+                for msg_dict in loaded_history:
+                    role = msg_dict.get("role")
+                    parts = []
+                    if "parts" in msg_dict:
+                        for part_dict in msg_dict["parts"]:
+                            if "text" in part_dict:
+                                parts.append(types.Text(text=part_dict["text"]))
+                            elif "file_data" in part_dict:
+                                parts.append(types.FileData(mime_type=part_dict["file_data"]["mime_type"], uri=part_dict["file_data"]["uri"]))
+                            # Если есть другие типы, добавьте здесь их обработку
+                        gemini_history.append(types.Message(role=role, parts=parts))
+                    elif "text" in msg_dict: # Для совместимости со старым форматом или простым текстом
+                         gemini_history.append(types.Message(role=role, parts=[types.Text(text=msg_dict["text"])]))
+                return gemini_history
+            except json.JSONDecodeError as e:
+                st.warning(f"Ошибка декодирования истории для пользователя {user_id_str}: {e}. История будет очищена.")
+                return []
+        return []
+
+    def clear_history(self, user_id):
+        """Очищает историю чата для пользователя в Redis."""
+        user_id_str = str(user_id)
+        result = self.r.delete(user_id_str)
+        return result == 1 # True, если ключ был удален, False, если его не было
+
+# Новый класс AI, работающий с Redis
 class AI:
-    def __init__(self, user_id):
+    def __init__(self, user_id, redis_manager):
         self.user_id = user_id
-        
-        # Загружаем историю для пользователя (с диска, если она есть)
-        # или инициализируем пустой. Это стартовая история для чата.
-        if user_id not in user_histories:
-            user_histories[user_id] = []
-            
-        self.model = "gemini-2.5-flash-preview-05-20"
-        
-        # Инициализация thinking_config
-        self.current_thinking_config = types.ThinkingConfig(thinking_budget=0)
+        self.redis_manager = redis_manager
+        self.model = "gemini-2.5-flash-preview-05-20" # Модель по умолчанию
+        self.thinking_budget = 0 # Бюджет обдумывания по умолчанию
 
-        # Создание чата с историей пользователя
-        # Используем ГЛОБАЛЬНЫЙ din_prompt как системную инструкцию
+        # Загружаем историю из Redis при инициализации AI объекта
+        self.history = self.redis_manager.load_history(self.user_id)
+        
+        # Инициализация чата
+        self._create_chat_session()
+    
+    def _create_chat_session(self):
+        """Внутренняя вспомогательная функция для создания/пересоздания объекта чата."""
         self.chat = client.chats.create(
             model=self.model,
             config=types.GenerateContentConfig(
                 safety_settings=safety_settings,
-                system_instruction=def_prompt, # Используем ГЛОБАЛЬНУЮ переменную
-                thinking_config=self.current_thinking_config
+                system_instruction=din_prompt, # Используем din_prompt как основную инструкцию
+                thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
             ),
-            history=user_histories[self.user_id] # Используем глобальную in-memory историю
+            history=self.history # Используем текущую загруженную историю
         )
     
-    def set_chat(self, model: str = None, thinking: bool = False):
-        # 1. Сначала получаем актуальную историю из ТЕКУЩЕГО объекта чата.
-        # Это гарантирует, что при пересоздании chat объекта, мы не потеряем диалог.
-        if self.chat: # Проверяем, существует ли chat объект, чтобы избежать ошибки при первом запуске
-            user_histories[self.user_id] = self.chat.get_history()
+    def set_chat_settings(self, model: str = None, thinking: bool = None):
+        """Обновляет настройки чата (модель, режим обдумывания) и пересоздает чат."""
+        settings_changed = False
 
-        # 2. Обновляем модель, если указана
         if model is not None:
-            if model.lower() == "flash":
-                self.model = "gemini-2.5-flash-preview-05-20"
-            elif model.lower() == "pro":
-                self.model = "gemini-2.5-pro-preview-06-05"
+            new_model = "gemini-2.5-flash-preview-05-20" if model.lower() == "flash" else "gemini-2.5-pro-preview-06-05"
+            if self.model != new_model:
+                self.model = new_model
+                settings_changed = True
         
-        # 3. Обновляем конфиг для thinking
-        if thinking is True:
-            self.current_thinking_config = types.ThinkingConfig(thinking_budget=4096)
-        else:
-            self.current_thinking_config = types.ThinkingConfig(thinking_budget=0)
-            
-        # 4. Создаем НОВЫЙ объект чата с АКТУАЛЬНОЙ историей и обновленными настройками
-        self.chat = client.chats.create(
-            model=self.model,
-            config=types.GenerateContentConfig(
-                safety_settings=safety_settings,
-                system_instruction=def_prompt, # Всегда используем ГЛОБАЛЬНЫЙ din_prompt
-                thinking_config=self.current_thinking_config
-            ),
-            history=user_histories[self.user_id] # Передаем самую свежую историю
-        )
-    
+        if thinking is not None:
+            new_thinking_budget = 4096 if thinking else 0
+            if self.thinking_budget != new_thinking_budget:
+                self.thinking_budget = new_thinking_budget
+                settings_changed = True
+        
+        if settings_changed:
+            self._create_chat_session() # Пересоздаем чат с новыми настройками
+
     def send_message(self, message=None, file=None):
         if not message and not file:
             return "Необходимо передать либо сообщение, либо файл."
@@ -285,31 +346,43 @@ class AI:
         response = None
         try:
             if file:
-                if file.mime_type != "audio/ogg":
-                    response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", file])
-                else:
+                # В зависимости от типа файла
+                if file.type.startswith("image/"): # Для изображений
+                    response = self.chat.send_message([message if message else "Проанализируй изображение", file])
+                elif file.type.startswith("audio/"): # Для аудио (как OGG)
                     response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", file])
+                elif file.type == "application/pdf": # Для PDF (просто пример, может потребоваться доп. логика для чтения)
+                    response = self.chat.send_message([message if message else "Проанализируй содержимое PDF файла", file])
+                else: # Универсальная обработка других типов
+                    response = self.chat.send_message([message if message else "Проанализируй содержимое файла", file])
             else:
                 response = self.chat.send_message(message)
             
-            # ОЧЕНЬ ВАЖНО: Обновляем глобальную in-memory историю ПОСЛЕ того, как модель ответила
-            user_histories[self.user_id] = self.chat.get_history()
+            # ОЧЕНЬ ВАЖНО: Получаем актуальную историю из чата и сохраняем ее в Redis
+            self.history = self.chat.get_history()
+            self.redis_manager.save_history(self.user_id, self.history)
 
             return response.text
         except Exception as e:
             st.error(f"Произошла ошибка при отправке сообщения: {e}")
-            # Возвращаем пустую строку или сообщение об ошибке, если произошла ошибка
             return f"Извините, произошла ошибка. Пожалуйста, попробуйте еще раз. {e}"
 
     def get_history(self):
-        # Возвращаем полную историю из текущего объекта чата
-        return self.chat.get_history()
+        # Возвращаем текущую историю из AI объекта
+        # Дополнительно обновляем self.history из chat объекта, чтобы быть уверенным в актуальности
+        self.history = self.chat.get_history()
+        return self.history
     
     def count_tokens(self):
-        self.tokens = client.models.count_tokens(model=self.model, contents=self.chat.get_history())
+        # Перед подсчетом токенов убедимся, что history актуальна
+        self.history = self.chat.get_history()
+        self.tokens = client.models.count_tokens(model=self.model, contents=self.history)
         return self.tokens.total_tokens
 
     def upload_file(self, file_path):
+        # Эта функция не используется в текущем коде Streamlit напрямую с файлами,
+        # так как send_message принимает BytesIO объект напрямую.
+        # Но если нужно загрузить файл отдельно, эта логика актуальна.
         sha256 = sha256_hash(file_path)
         for f in client.files.list():
             if f.display_name == sha256:
@@ -321,16 +394,13 @@ class AI:
         st.success(f"Файл {sha256} загружен.")
         return file
     
-
-    def clear_history(self, user_id, json_path="history.json"):
+    def clear_history(self):
         """
-        Очищает историю сообщений конкретного пользователя в памяти и на диске.
+        Очищает историю сообщений конкретного пользователя в Redis и в текущем AI объекте.
         """
-        # Очищаем в in-memory словаре
-        user_histories[user_id] = []
-        
-        # Обновляем self.chat, чтобы он использовал пустую историю
-        self.set_chat(model=self.model, thinking=(self.current_thinking_config.thinking_budget > 0))
+        self.redis_manager.clear_history(self.user_id) # Очищаем в Redis
+        self.history = [] # Очищаем внутреннюю историю AI объекта
+        self._create_chat_session() # Пересоздаем чат с пустой историей
         return True
 
 # --- Streamlit UI ---
@@ -344,10 +414,41 @@ if "username" not in st.query_params:
 user_id = st.query_params["user_id"]
 username = st.query_params["username"]
 
+# Инициализация RedisHistoryManager (один раз за сессию)
+if "redis_manager" not in st.session_state:
+    # Убедитесь, что REDIS_HOST, REDIS_PORT, REDIS_USERNAME, REDIS_PASSWORD
+    # добавлены в ваш файл .streamlit/secrets.toml
+    st.session_state.redis_manager = RedisHistoryManager()
+redis_manager = st.session_state.redis_manager
+
+# Инициализация AI объекта при первом запуске или смене пользователя
+# Передаем redis_manager в конструктор AI
 if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
-    # Инициализация AI объекта при первом запуске или смене пользователя
     st.session_state.user_id = user_id
-    st.session_state.ai = AI(user_id)
+    st.session_state.ai = AI(user_id, redis_manager) # Передаем redis_manager
+
+    # При загрузке новой сессии/смене пользователя, загружаем историю из Redis
+    # и заполняем st.session_state.messages для отображения.
+    st.session_state.messages = []
+    # AI объект уже загрузил историю из Redis в self.history.
+    # Теперь мы извлекаем ее для отображения в UI.
+    loaded_history = st.session_state.ai.get_history()
+    for msg_part in loaded_history:
+        # Пропускаем системные инструкции, так как они не предназначены для отображения в чате.
+        # Также пропускаем сообщения без содержимого (могут быть пустыми ролями).
+        if msg_part.role != "system":
+            content_parts = []
+            if hasattr(msg_part, 'parts'):
+                for part in msg_part.parts:
+                    if hasattr(part, 'text'):
+                        content_parts.append(part.text)
+                    # Можно добавить логику для отображения других типов (изображений, файлов)
+            elif hasattr(msg_part, 'text'): # Для старых форматов
+                content_parts.append(msg_part.text)
+            
+            content = "".join(content_parts)
+            if content: # Добавляем только если есть текст
+                st.session_state.messages.append({"role": msg_part.role, "content": content})
 
 ai = st.session_state.ai
 
@@ -415,10 +516,6 @@ div[data-testid="stColumn"]:nth-child(2) { /* Вторая колонка - дл
 """, unsafe_allow_html=True)
 
 
-# Инициализируем st.session_state.messages, если его нет
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
 # Отображаем существующие сообщения из st.session_state.messages
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -447,13 +544,14 @@ if user_input:
 # --- Выбор режима (Selectbox) и кнопка очистки истории (иконка) ---
 
 # Создаем две колонки: для Selectbox и для кнопки "Очистить историю"
-# Пропорции: 0.7 для selectbox, 0.3 для кнопки.
+# Пропорции: 0.2 для selectbox, 0.8 для кнопки.
 col_think, col_clear = st.columns([0.2, 0.8]) 
 
 with col_think:
     think_mode_options = ["NoThink", "Think"]
-    current_think_mode_index = 1 if ai.current_thinking_config.thinking_budget > 0 else 0
-    # Используем selectbox вместо radio
+    # Получаем текущий режим обдумывания из AI объекта
+    current_think_mode_index = 1 if ai.thinking_budget > 0 else 0
+    
     think_mode_choice = st.selectbox(
         "Режим:",
         options=think_mode_options,
@@ -464,14 +562,13 @@ with col_think:
 
 with col_clear:
     # Кнопка для очистки истории с иконкой "trash"
-    if st.button("🗑️", key="clear_history_button_bottom", help="Очистить историю"): # Изменил текст кнопки на пустую строку, чтобы была только иконка
-        ai.clear_history(user_id)
-        st.session_state.messages = [] # Очищаем и отображаемую историю
+    if st.button("🗑️", key="clear_history_button_bottom", help="Очистить историю"):
+        ai.clear_history() # Вызываем метод очистки у AI объекта
+        st.session_state.messages = [] # Очищаем и отображаемую историю в Streamlit
         st.success("История чата очищена.")
-        # Переинициализируем AI, чтобы его внутренний чат также был пустым
-        st.session_state.ai = AI(user_id) 
-        st.rerun() # Перезапускаем, чтобы UI обновился корректно
+        st.rerun() # Перезапускаем, чтобы UI обновился корректно и чат был пуст
 
 # Применяем выбранные настройки
 # Модель всегда будет "flash", так как выбор модели убран из UI
-ai.set_chat(model="flash", thinking=(think_mode_choice == "Think"))
+# Обновляем настройки в AI объекте. AI сам пересоздаст внутренний чат.
+ai.set_chat_settings(model="flash", thinking=(think_mode_choice == "Think"))
