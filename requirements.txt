@@ -1,5 +1,6 @@
 streamlit
 streamlit-js-eval
+streamlit-mermaid
 google-genai
 python-dotenv
 redis
