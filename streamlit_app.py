@@ -676,7 +676,7 @@ with st.form("chat_form", clear_on_submit=True):
     input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос"
     
     user_message = st.text_input(input_label, key="user_text_input")
-    uploaded_file = st.file_uploader("Загрузить файл", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md"], key="file_uploader") # Добавьте нужные типы файлов
+    uploaded_file = st.file_uploader("Загрузить файл", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv", "xlsx"], key="file_uploader") # Добавьте нужные типы файлов
 
     submit_button = st.form_submit_button("Отправить")
 
