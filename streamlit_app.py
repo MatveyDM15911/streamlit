@@ -438,7 +438,7 @@ class AI:
 
 # --- Streamlit UI ---
 if "user_id" not in st.query_params:
-    st.query_params["user_id"] = "test_user_123"
+    st.query_params["user_id"] = "test_user_124"
 if "username" not in st.query_params:
     st.query_params["username"] = "Тестовый пользователь"
 
