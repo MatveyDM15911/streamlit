@@ -3,6 +3,7 @@ import os
 import json
 import hashlib, base64
 import redis
+import tempfile # Для создания временных файлов
 from google import genai
 from google.genai import types
 
@@ -80,7 +81,7 @@ din_prompt = """<System_Prompt>
 <Handling_Personal_Venting>
 **(Активирует Режим 'Трезвого Взгляда')**
 Когда собеседник делится проблемами в стиле жалобы, 'изливает душу', ищет виноватых, застрял:
-*   **Будь Прямым до Брутальности:** По сути. Называй вещи своими именами. **Крайне редко** используй сильные выражения для шока/акцента.
+*   **Будь Прямым до Брутальности:** По сути. Называй вещи своими именами. **Крайне редко** используй сильные выражения для акцента.
 *   **Анализируй Беспощадно:** Корень проблемы, паттерны, вторичные выгоды, искажения. Неудобные вопросы (но используй их внутри анализа, а не вываливай списком).
 *   **Фокусируй на Ответственности:** Зона контроля собеседника.
 *   **Разоблачай Самообман и Отмазки:** Указывай на противоречия, нелогичность, оправдания.
@@ -185,7 +186,7 @@ din_prompt = """<System_Prompt>
             а) **Анализ запросов:** Используй `django-debug-toolbar` и `EXPLAIN ANALYZE` в psql, чтобы найти самые медленные SQL-запросы. Это покажет узкие места.
             б) **Оптимизация БД/ORM:** На основе анализа добавь нужные индексы. Перепиши тяжелые запросы, используй `select_related/prefetch_related`.
             в) **Кэширование:** Если (а) и (б) недостаточно, внедряй кэширование результатов запросов или фрагментов (`django.core.cache`).
-            г) **Фоновые задачи:** Если отчет принципиально долгий, вынеси генерацию в фон (Celery + Redis/RabbitMQ).
+            г) **Фоновые задачи:** Если отчет принципиально долгий, вынеси генерацию в фон (Celery + Redis + RabbitMQ).
         *   **Приоритет:** Начни с пункта (а). Часто уже оптимизация запросов и индексов дает основной прирост.
     **Предлагаю начать с анализа конкретных запросов с помощью `EXPLAIN ANALYZE`. Покажу, как это сделать?**'
 
@@ -265,6 +266,8 @@ class RedisHistoryManager:
                     if hasattr(part, 'text') and part.text is not None:
                         parts_data.append({"text": part.text})
                     # Игнорируем файловые части при сохранении в Redis
+                    # Чтобы не хранить данные о файлах в истории Redis
+                    # Если нужно хранить URI файла, то можно добавить это здесь
                     # elif hasattr(part, 'file_data') and part.file_data is not None:
                     #     parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
                     else:
@@ -351,25 +354,42 @@ class AI:
         if not message and not file:
             return "Необходимо передать либо сообщение, либо файл."
         
+        contents_to_send = []
+        if message:
+            contents_to_send.append(message)
+
+        if file:
+            # Создаем временный файл на диске из Streamlit UploadedFile
+            # Это необходимо, так как client.files.upload ожидает путь к файлу
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.name.split('.')[-1]}") as tmp_file:
+                tmp_file.write(file.getvalue())
+                temp_file_path = tmp_file.name
+
+            try:
+                # Загружаем временный файл на Google AI Platform Files API
+                # и получаем URI файла
+                uploaded_google_file = client.files.upload(
+                    file=temp_file_path, 
+                    config=types.UploadFileConfig(display_name=file.name)
+                )
+                
+                # Добавляем ссылку на файл в список содержимого для отправки
+                contents_to_send.append(uploaded_google_file) # Теперь это объект `File` с `uri`
+                
+            finally:
+                # Всегда удаляем временный файл с локального диска
+                os.remove(temp_file_path)
+        
         response_text = ""
         try:
-            if file:
-                if hasattr(file, 'getvalue') and hasattr(file, 'type'): # Проверяем, что это Streamlit UploadedFile
-                    if "audio/" in file.type:
-                        response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", file])
-                    else:
-                        response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", file])
-                else:
-                    if hasattr(file, 'mime_type') and "audio/" in file.mime_type:
-                        response = self.chat.send_message(["Ответь на запрос в голосовом сообщении пользователя", file])
-                    else:
-                        response = self.chat.send_message([message if message else "Коротко опиши содержимое файла", file])
-            else:
-                response = self.chat.send_message(message)
-            
+            # Отправляем сообщение/файл в чат
+            response = self.chat.send_message(contents_to_send)
             response_text = response.text
             
-            self.history = self.chat.get_history() # Возвращает список types.Message
+            # Получаем актуальную историю из чата (она будет в формате types.Message)
+            # и сохраняем ее в Redis через redis_manager, который преобразует ее в словари,
+            # игнорируя при этом файловые части, как запрошено.
+            self.history = self.chat.get_history()
             self.redis_manager.save_history(self.user_id, self.history)
 
             return response_text
@@ -390,13 +410,22 @@ class AI:
             return -1
 
     def upload_file(self, file_path):
-        sha256 = sha256_hash(file_path)
+        # Эта функция теперь используется внутренне в send_message,
+        # чтобы загрузить временный файл из Streamlit на сервер Google AI.
+        sha256 = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                sha256.update(chunk)
+        file_hash = sha256.hexdigest()
+
+        # Проверяем, может быть, файл с таким хешем уже загружен на Google AI Platform
         for f in client.files.list():
-            if f.display_name == sha256:
+            if f.display_name == file_hash:
                 file = client.files.get(name=f.name)
-                return file
-        
-        file = client.files.upload(file=file_path, config=(types.UploadFileConfig(display_name=sha256)))
+                return file # Возвращаем существующий File object
+
+        # Если файла нет, загружаем его
+        file = client.files.upload(file=file_path, config=(types.UploadFileConfig(display_name=file_hash)))
         return file
     
     def clear_history(self):
@@ -434,7 +463,9 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
         for part_dict in parts_list:
             if "text" in part_dict:
                 content_parts.append(part_dict["text"])
-            elif "file_data" in part_dict: # Если файл все же был сохранен (на случай изменений в RedisHistoryManager)
+            # File data не сохраняется в Redis, поэтому этот блок не будет вызван
+            # если только вы не измените RedisHistoryManager.save_history
+            elif "file_data" in part_dict: 
                 content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
             elif "unsupported_content" in part_dict:
                  content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
@@ -541,6 +572,7 @@ with st.form("chat_form", clear_on_submit=True):
 
             # Отправляем сообщение AI и получаем ответ
             with st.spinner("Думаю..."):
+                # Передаем ai.send_message и текст, и объект UploadedFile
                 response = ai.send_message(message=user_message, file=uploaded_file)
             
             # Добавляем ответ AI в UI
