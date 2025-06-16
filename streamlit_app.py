@@ -5,7 +5,7 @@ import hashlib, base64
 import redis
 import tempfile # Для создания временных файлов
 from google import genai
-from google.genai import types # Импорт необходим для базовых типов Gemini API
+from google.genai import types
 
 # --- 1. ПЕРЕМЕЩАЕМ st.set_page_config В НАЧАЛО ---
 # Эта команда должна быть первой!
@@ -55,7 +55,6 @@ din_prompt = """<System_Prompt>
 *   **Анализ Входных Данных:** Ты умеешь качественно анализировать текст, изображения (фото), документы (если предоставлены) и ссылки (переходя по ним для анализа веб-страниц).
 *   **Извлечение Данных с Веб-Страниц:** Способен извлекать ключевую информацию, структуру и данные с веб-страниц по предоставленным ссылкам.
 *   **Веб-Поиск:** Можешь искать актуальную информацию в интернете по запросу. Предоставляй найденную информацию сжато и по делу, обязательно указывая источники (ссылки), если это уместно и добавляет ценности.
-*   **Использование Известных Ссылок:** Если помнишь конкретную релевантную ссылку на надежный ресурс, смело используй ее в ответе.
 *   **Математические Расчеты:** При выполнении математических вычислений строго следуй стандартному порядку операций (скобки, степени, умножение/деление, сложение/вычитание).
 *   **Работа с Файлами:** Если анализируешь содержание предоставленного файла, основывай свой ответ **исключительно** на информации из этого файла. Не додумывай и не добавляй информацию, которой в файле нет.
 *   **Парсинг и скрепинг:** Ты можешь всегда в коде писать полноценный код для парсинга и скрепинга, не используя заглушки. Библиотеки пользователя позволяют это делать. Не отказывай и не ставь заглушки.
@@ -254,7 +253,7 @@ class RedisHistoryManager:
         """
         Сохраняет историю чата для пользователя в Redis.
         history_list_from_gemini - это список объектов google.genai.types.Message.
-        Мы преобразуем их в словари, сохраняя ТОЛЬКО текстовые части.
+        Преобразуем их в ваш формат словарей, игнорируя файловые части.
         """
         user_id_str = str(user_id)
         
@@ -266,17 +265,19 @@ class RedisHistoryManager:
                 for part in message.parts:
                     if hasattr(part, 'text') and part.text is not None:
                         parts_data.append({"text": part.text})
-                    # Игнорируем все нетекстовые части, включая file_data,
-                    # как запрошено.
-                    # Мы не добавляем никаких заглушек типа {"unsupported_content": str(part)},
-                    # чтобы избежать проблем с Pydantic при загрузке.
-            elif hasattr(message, 'text') and message.text is not None: # Для старых/простых текстовых сообщений
-                parts_data.append({"text": message.text})
-            
-            # Добавляем в историю только если есть хотя бы одна текстовая часть
-            if parts_data:
+                    # Игнорируем файловые части при сохранении в Redis
+                    # Чтобы не хранить данные о файлах в истории Redis
+                    # Если нужно хранить URI файла, то можно добавить это здесь
+                    # elif hasattr(part, 'file_data') and part.file_data is not None:
+                    #     parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
+                    else:
+                        # Если это не текст и не файл (или мы игнорируем файл), то сохраняем как заглушку/строку
+                        parts_data.append({"unsupported_content": str(part)})
                 msg_dict["parts"] = parts_data
-                serializable_history.append(msg_dict)
+            elif hasattr(message, 'text') and message.text is not None:
+                msg_dict["parts"] = [{"text": message.text}]
+            
+            serializable_history.append(msg_dict)
         
         try:
             json_data = json.dumps(serializable_history, ensure_ascii=False)
@@ -287,33 +288,14 @@ class RedisHistoryManager:
     def load_history(self, user_id):
         """
         Загружает историю чата для пользователя из Redis.
-        Возвращает список объектов google.genai.types.Message,
-        содержащих только текстовые части, чтобы удовлетворить Pydantic.
+        Возвращает список словарей, как они были сохранены.
         """
         user_id_str = str(user_id)
         raw = self.r.get(user_id_str)
         if raw:
             try:
                 loaded_history_dicts = json.loads(raw)
-                gemini_history_objects = []
-                for msg_dict in loaded_history_dicts:
-                    role = msg_dict.get("role")
-                    parts = []
-                    # Восстанавливаем только текстовые части
-                    if "parts" in msg_dict:
-                        for part_dict in msg_dict["parts"]:
-                            if "text" in part_dict and part_dict["text"] is not None:
-                                parts.append(text=part_dict["text"])
-                    
-                    # Создаем types.Message объект
-                    # Важно: Chat API может требовать непустой список parts.
-                    # Если частей нет, но роль есть, можно добавить пустую текстовую часть.
-                    if role:
-                        if not parts: # Если нет текстовых частей, но сообщение есть (например, был только файл)
-                             parts.append(text="") # Добавляем пустой текст, чтобы Pydantic не ругался
-                        gemini_history_objects.append(types.Message(role=role, parts=parts))
-
-                return gemini_history_objects
+                return loaded_history_dicts
             except json.JSONDecodeError as e:
                 st.error(f"Ошибка декодирования JSON при загрузке истории: {e}. История будет пустой.")
                 return []
@@ -335,8 +317,6 @@ class AI:
         self.model = "gemini-2.5-flash-preview-05-20"
         self.thinking_budget = 0
 
-        # history будет хранить список объектов google.genai.types.Message
-        # Загружает уже готовые объекты types.Message, как требуется Pydantic
         self.history = self.redis_manager.load_history(self.user_id)
         
         self._create_chat_session()
@@ -349,7 +329,7 @@ class AI:
                 system_instruction=din_prompt,
                 thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
             ),
-            history=self.history # Здесь передаем список объектов types.Message
+            history=self.history
         )
     
     def set_chat_settings(self, model: str = None, thinking: bool = None):
@@ -388,13 +368,13 @@ class AI:
             try:
                 # Загружаем временный файл на Google AI Platform Files API
                 # и получаем URI файла
-                # Используем свою же функцию upload_file, чтобы избежать повторной загрузки
-                # если файл с таким хешем уже есть на сервере Google
-                uploaded_google_file_obj = self.upload_file(temp_file_path)
+                uploaded_google_file = client.files.upload(
+                    file=temp_file_path, 
+                    config=types.UploadFileConfig(display_name=file.name)
+                )
                 
                 # Добавляем ссылку на файл в список содержимого для отправки
-                # Теперь это объект google.genai.types.File (или types.Blob, если так возвращает upload_file)
-                contents_to_send.append(uploaded_google_file_obj) 
+                contents_to_send.append(uploaded_google_file) # Теперь это объект `File` с `uri`
                 
             finally:
                 # Всегда удаляем временный файл с локального диска
@@ -409,7 +389,7 @@ class AI:
             # Получаем актуальную историю из чата (она будет в формате types.Message)
             # и сохраняем ее в Redis через redis_manager, который преобразует ее в словари,
             # игнорируя при этом файловые части, как запрошено.
-            self.history = self.chat.get_history() # Возвращает список types.Message
+            self.history = self.chat.get_history()
             self.redis_manager.save_history(self.user_id, self.history)
 
             return response_text
@@ -418,8 +398,7 @@ class AI:
             return f"Извините, произошла ошибка. Пожалуйста, попробуйте еще раз. Детали ошибки: {e}"
 
     def get_history(self):
-        # Эта функция просто возвращает текущее состояние self.history,
-        # которое уже содержит объекты types.Message (после send_message)
+        self.history = self.chat.get_history()
         return self.history
     
     def count_tokens(self):
@@ -440,7 +419,6 @@ class AI:
         file_hash = sha256.hexdigest()
 
         # Проверяем, может быть, файл с таким хешем уже загружен на Google AI Platform
-        # (это позволяет избежать повторной загрузки одного и того же файла)
         for f in client.files.list():
             if f.display_name == file_hash:
                 file = client.files.get(name=f.name)
@@ -474,26 +452,27 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
     st.session_state.ai = AI(user_id, redis_manager)
 
     st.session_state.messages = []
-    # Теперь history в AI объекте уже является списком объектов types.Message
-    loaded_gemini_history = st.session_state.ai.history 
+    loaded_history_for_display = st.session_state.ai.history 
     
-    for msg_gemini in loaded_gemini_history:
-        if msg_gemini.role == "system":
+    for msg_dict in loaded_history_for_display:
+        if msg_dict.get("role") == "system":
             continue
             
         content_parts = []
-        if hasattr(msg_gemini, 'parts'):
-            for part in msg_gemini.parts:
-                if hasattr(part, 'text'):
-                    content_parts.append(part.text)
-                # Поскольку RedisHistoryManager.save_history теперь не сохраняет нетекстовые части,
-                # этот блок для отображения "file_data" или "unsupported_content"
-                # не будет вызываться для восстановленной истории, если только
-                # вы не измените логику сохранения в Redis.
+        parts_list = msg_dict.get("parts", [])
+        for part_dict in parts_list:
+            if "text" in part_dict:
+                content_parts.append(part_dict["text"])
+            # File data не сохраняется в Redis, поэтому этот блок не будет вызван
+            # если только вы не измените RedisHistoryManager.save_history
+            elif "file_data" in part_dict: 
+                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
+            elif "unsupported_content" in part_dict:
+                 content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
         
         content_to_display = "".join(content_parts)
         
-        display_role = "user" if msg_gemini.role == "user" else "assistant"
+        display_role = "user" if msg_dict.get("role") == "user" else "assistant"
         
         if content_to_display:
             st.session_state.messages.append({"role": display_role, "content": content_to_display})
