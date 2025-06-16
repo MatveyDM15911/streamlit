@@ -357,6 +357,8 @@ class AI:
         contents_to_send = []
         if message:
             contents_to_send.append(message)
+        else:
+            contents_to_send.append("Опиши файл кратко")
 
         if file:
             # Создаем временный файл на диске из Streamlit UploadedFile
