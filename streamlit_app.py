@@ -373,9 +373,9 @@ class AI:
         
         # Определяем имя чата на основе первого сообщения, если это новый чат
         # и текущий чат по умолчанию "Новый чат"
-        is_new_chat = (self.chat_name == DEFAULT_CHAT_NAME and not self.history)
+        is_new_chat_and_empty = (self.chat_name == DEFAULT_CHAT_NAME and not self.history)
         
-        if is_new_chat:
+        if is_new_chat_and_empty:
             if message:
                 new_chat_name = truncate_chat_name(message)
             elif file:
@@ -391,7 +391,7 @@ class AI:
                 # Сохраняем пустую историю под новым именем, чтобы оно появилось в списке чатов
                 # Затем удаляем старую запись (если она была)
                 self.redis_manager.save_chat_history(self.user_id, self.chat_name, [])
-                if old_chat_name_for_deletion == DEFAULT_CHAT_NAME and self.redis_manager.load_chat_history(self.user_id, old_chat_name_for_deletion) == []:
+                if old_chat_name_for_deletion == DEFAULT_CHAT_NAME and not self.redis_manager.load_chat_history(self.user_id, old_chat_name_for_deletion):
                      # Удаляем только если "Новый чат" был пустой (то есть еще не был наполнен историей)
                     self.redis_manager.delete_chat_history(self.user_id, old_chat_name_for_deletion)
                 
@@ -468,6 +468,7 @@ class AI:
             # и заставляем Streamlit перерендерить приложение
             st.session_state.current_chat_name = DEFAULT_CHAT_NAME
             st.session_state.messages = [] # Очищаем UI сообщения
+            st.session_state.is_first_message = True # Сбрасываем флаг для нового чата
             # Обновляем список доступных чатов
             st.session_state.all_chat_names = self.redis_manager.get_all_chat_names(self.user_id)
             # Пересоздаем AI объект для нового чата
@@ -496,28 +497,38 @@ if "all_chat_names" not in st.session_state:
     # Если нет чатов, создаем "Новый чат"
     if not st.session_state.all_chat_names:
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
+        st.session_state.is_first_message = True # Это новый пустой чат
     else:
         # Иначе, загружаем первый из существующих
         st.session_state.current_chat_name = st.session_state.all_chat_names[0]
+        # Проверяем, пуста ли история загруженного чата
+        loaded_initial_history = redis_manager.load_chat_history(user_id, st.session_state.current_chat_name)
+        st.session_state.is_first_message = not bool(loaded_initial_history)
 elif st.session_state.current_chat_name not in st.session_state.all_chat_names and \
      st.session_state.current_chat_name != DEFAULT_CHAT_NAME:
     # Если выбранный чат был удален или исчез, переключаемся на первый или новый
     if st.session_state.all_chat_names:
         st.session_state.current_chat_name = st.session_state.all_chat_names[0]
+        loaded_initial_history = redis_manager.load_chat_history(user_id, st.session_state.current_chat_name)
+        st.session_state.is_first_message = not bool(loaded_initial_history)
     else:
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
-
+        st.session_state.is_first_message = True
 
 # Инициализация AI объекта или переинициализация при смене пользователя/чата
 if "ai" not in st.session_state or \
    st.session_state.get("user_id") != user_id or \
    st.session_state.ai.get_chat_name() != st.session_state.current_chat_name:
+    
     st.session_state.user_id = user_id # Обновляем user_id в сессии
     st.session_state.ai = AI(user_id, st.session_state.current_chat_name, redis_manager)
 
     st.session_state.messages = []
     loaded_history_for_display = st.session_state.ai.history 
     
+    # Обновляем is_first_message при каждой загрузке/переключении чата
+    st.session_state.is_first_message = not bool(loaded_history_for_display)
+
     for msg_dict in loaded_history_for_display:
         if msg_dict.get("role") == "system":
             continue
@@ -542,7 +553,6 @@ if "ai" not in st.session_state or \
 ai = st.session_state.ai
 
 # --- UI for current chat ---
-st.title(f"Чат {username}")
 st.subheader(f"Текущий диалог: **{st.session_state.current_chat_name}**")
 
 
@@ -614,6 +624,7 @@ with st.sidebar:
     if st.button("➕ Новый чат", use_container_width=True):
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
         st.session_state.messages = []
+        st.session_state.is_first_message = True # Это новый пустой чат
         # AI объект будет переинициализирован ниже
         st.rerun()
 
@@ -632,6 +643,9 @@ with st.sidebar:
                     st.session_state.messages = [] # Clear current UI messages
                     # Load messages from the newly selected chat history
                     loaded_history_for_display = st.session_state.ai.history
+                    # Обновляем is_first_message при каждой загрузке/переключении чата
+                    st.session_state.is_first_message = not bool(loaded_history_for_display)
+
                     for msg_dict in loaded_history_for_display:
                         if msg_dict.get("role") == "system": continue
                         content_parts = []
@@ -656,13 +670,23 @@ for message in st.session_state.messages:
 
 # --- Форма для ввода текста и загрузки файла ---
 with st.form("chat_form", clear_on_submit=True):
-    user_message = st.text_input("Введите ваш запрос:", key="user_text_input")
+    # Определяем метку для поля ввода в зависимости от флага is_first_message
+    input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос"
+    
+    user_message = st.text_input(input_label, key="user_text_input")
     uploaded_file = st.file_uploader("Загрузить файл", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav"], key="file_uploader") # Добавьте нужные типы файлов
 
     submit_button = st.form_submit_button("Отправить")
 
     if submit_button:
         if user_message or uploaded_file:
+            # Если это было первое сообщение и чат был "Новый чат", обновляем флаг
+            if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME:
+                # Этот флаг будет снова установлен на False после успешной отправки в send_message
+                # и последующего reruns (если имя чата изменится).
+                # Если же имя чата не меняется (например, пустой запрос), флаг останется True.
+                pass # Логика изменения имени чата уже в send_message
+
             # Комбинируем сообщение для отображения
             display_content = user_message if user_message else ""
             if uploaded_file:
@@ -680,6 +704,9 @@ with st.form("chat_form", clear_on_submit=True):
             with st.spinner("Думаю..."):
                 response = ai.send_message(message=user_message, file=uploaded_file)
             
+            # После успешной отправки сообщения, это уже не первое сообщение в чате
+            st.session_state.is_first_message = False
+
             # Добавляем ответ AI в UI
             st.session_state.messages.append({"role": "assistant", "content": response})
             with st.chat_message("assistant"):
