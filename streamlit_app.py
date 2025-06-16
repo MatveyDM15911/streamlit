@@ -9,7 +9,6 @@ from google.genai import types
 import datetime # Для генерации имени чата
 from streamlit_mermaid import st_mermaid # Импортируем компонент для Mermaid
 import re # Для регулярных выражений, чтобы найти блоки Mermaid
-import streamlit.components.v1 as components # Для внедрения HTML/JS
 
 # --- 1. ПЕРЕМЕЩАЕМ st.set_page_config В НАЧАЛО ---
 # Эта команда должна быть первой!
@@ -27,7 +26,7 @@ if "genai_client" not in st.session_state:
     st.session_state.genai_client = genai.Client(api_key=api_key)
 client = st.session_state.genai_client
 
-# Глобальный промпт для системной инструкции (без изменений)
+# Глобальный промпт для системной инструкции
 din_prompt = """<System_Prompt>
 
 <Role_Definition>
@@ -187,7 +186,7 @@ din_prompt = """<System_Prompt>
         *   Железо/Настройка: Крайняя мера или дополнение.
     4.  **Шаг 4: Формирование Решения.** Начинать нужно с наименее инвазивных и наиболее вероятных методов:
         *   **План:**
-            а) **Анализ запросов:** Используй `django-debug-toolbar` и `EXPLAIN ANALYZE` в psql, чтобы найти самые медленные SQL-запросы.
+            а) **Анализ запросов:** Используй `django-debug-toolbar` и `EXPLAIN ANALYZE` в psql, чтобы найти самые медленные SQL-запросы. Это покажет узкие места.
             б) **Оптимизация БД/ORM:** На основе анализа добавь нужные индексы. Перепиши тяжелые запросы, используй `select_related/prefetch_related`.
             в) **Кэширование:** Если (а) и (б) недостаточно, внедряй кэширование результатов запросов или фрагментов (`django.core.cache`).
             г) **Фоновые задачи:** Если отчет принципиально долгий, вынеси генерацию в фон (Celery + Redis + RabbitMQ).
@@ -259,36 +258,6 @@ def truncate_chat_name(text: str) -> str:
         return text[:MAX_CHAT_NAME_LENGTH] + "..."
     return text
 
-# Вспомогательная функция для преобразования словарей истории в объекты types.Message
-def convert_dict_to_gemini_message(history_dicts: list) -> list[types.Message]:
-    gemini_history = []
-    for msg_dict in history_dicts:
-        role = msg_dict.get("role")
-        parts = []
-        for part_data in msg_dict.get("parts", []):
-            if "text" in part_data:
-                parts.append(types.Part(text=part_data["text"]))
-            # Если у вас были другие типы контента, такие как 'file_data',
-            # их нужно будет десериализовать обратно в соответствующий types.Part.
-            # В данном случае, мы сохраняем только 'text' и 'unsupported_content' для отображения,
-            # но для отправки в API нужна правильная структура Google API.
-            # Для 'unsupported_content' здесь мы просто пропускаем, чтобы не вызвать ошибку
-            # при попытке создать types.Part из произвольной строки.
-            elif "file_data" in part_data and "uri" in part_data.get("file_data", {}):
-                # Если вы ранее сохраняли URI файлов, можете воссоздать FileData
-                parts.append(types.Part(file_data=types.FileData(mime_type=part_data["file_data"]["mime_type"], uri=part_data["file_data"]["uri"])))
-            elif "unsupported_content" in part_data:
-                # Пропускаем неподдерживаемый контент, чтобы не сломать API
-                pass
-        
-        # Убедимся, что роль соответствует ожидаемым 'user'/'model'
-        if role == 'user' or role == 'model': # 'assistant' в API фактически 'model'
-            gemini_history.append(types.Message(role=role, parts=parts))
-        elif role == 'assistant': # Преобразуем 'assistant' в 'model' для API
-             gemini_history.append(types.Message(role='model', parts=parts))
-
-    return gemini_history
-
 # Класс для управления историей в Redis
 class RedisHistoryManager:
     def __init__(self):
@@ -311,8 +280,7 @@ class RedisHistoryManager:
         """
         Сохраняет историю чата для пользователя в Redis под заданным именем чата.
         history_list_from_gemini - это список объектов google.genai.types.Message.
-        Преобразуем их в ваш формат словарей, игнорируя файловые части, если они нетекстовые
-        или если их URI уже неактуальны.
+        Преобразуем их в ваш формат словарей, игнорируя файловые части.
         """
         user_id_str = str(user_id)
         
@@ -324,15 +292,10 @@ class RedisHistoryManager:
                 for part in message.parts:
                     if hasattr(part, 'text') and part.text is not None:
                         parts_data.append({"text": part.text})
-                    elif hasattr(part, 'file_data') and part.file_data is not None:
-                        # Внимание: URI файлов могут быть временными и неактуальными после сессии.
-                        # Сохраняем только для демонстрации, что они были. Для реального
-                        # использования, нужна система управления файлами.
-                        parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
                     else:
                         parts_data.append({"unsupported_content": str(part)})
                 msg_dict["parts"] = parts_data
-            elif hasattr(message, 'text') and message.text is not None: # Запасной вариант, если message сам текст
+            elif hasattr(message, 'text') and message.text is not None:
                 msg_dict["parts"] = [{"text": message.text}]
             
             serializable_history.append(msg_dict)
@@ -387,10 +350,7 @@ class AI:
         self.model = "gemini-2.5-flash-preview-05-20"
         self.thinking_budget = 0 # По умолчанию без thinking budget
 
-        # Загружаем историю как словари
-        loaded_raw_history_dicts = self.redis_manager.load_chat_history(self.user_id, self.chat_name)
-        # Преобразуем словари в объекты types.Message перед созданием сессии
-        self.history = convert_dict_to_gemini_message(loaded_raw_history_dicts)
+        self.history = self.redis_manager.load_chat_history(self.user_id, self.chat_name)
         
         self._create_chat_session()
     
@@ -403,7 +363,7 @@ class AI:
                 system_instruction=din_prompt,
                 thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
             ),
-            history=self.history # Теперь self.history содержит types.Message
+            history=self.history # Передаем историю
         )
     
     def set_chat_settings(self, model: str = None, thinking: bool = None):
@@ -570,7 +530,6 @@ if "is_first_message" not in st.session_state:
         loaded_initial_history = st.session_state.redis_manager.load_chat_history(user_id, st.session_state.current_chat_name)
         st.session_state.is_first_message = not bool(loaded_initial_history)
 
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -586,14 +545,13 @@ if "ai" not in st.session_state or \
 
     # Загружаем сообщения для отображения, если AI объект только что создан/пересоздан
     st.session_state.messages = []
-    # Важно: здесь мы используем loaded_raw_history_dicts, чтобы получить сырые словари для UI
-    # AI.__init__ уже преобразовал их в types.Message для работы с API
-    loaded_raw_history_dicts = redis_manager.load_chat_history(user_id, st.session_state.current_chat_name)
+    loaded_history_for_display = st.session_state.ai.history 
     
     # Обновляем is_first_message при каждой загрузке/переключении чата
-    st.session_state.is_first_message = not bool(loaded_raw_history_dicts)
+    # Это важно, так как при переключении на пустой чат флаг должен быть True
+    st.session_state.is_first_message = not bool(loaded_history_for_display)
 
-    for msg_dict in loaded_raw_history_dicts: # Перебираем сырые словари для отображения
+    for msg_dict in loaded_history_for_display:
         if msg_dict.get("role") == "system":
             continue
             
@@ -602,17 +560,18 @@ if "ai" not in st.session_state or \
         for part_dict in parts_list:
             if "text" in part_dict:
                 content_parts.append(part_dict["text"])
-            elif "file_data" in part_dict: 
-                # Для отображения файловых данных в UI, используем их метаданные
-                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
-            elif "unsupported_content" in part_dict:
-                content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
             else:
-                content_parts.append(f"[[Неизвестный контент]]")
+                # Обработка других типов частей (например, файловых) для отображения
+                # В данном случае, мы их не "парсим" в текст для Mermaid, но хотим видеть в истории
+                if "file_data" in part_dict: 
+                    content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
+                elif "unsupported_content" in part_dict:
+                    content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
+                else:
+                    content_parts.append(f"[[Неизвестный контент]]")
         
         content_to_display = "".join(content_parts)
         
-        # 'assistant' преобразуем в 'model' для API, но для UI можно оставить 'assistant'
         display_role = "user" if msg_dict.get("role") == "user" else "assistant"
         
         if content_to_display:
@@ -682,13 +641,6 @@ div[data-testid="stColumn"]:nth-child(2) { /* Вторая колонка - дл
 div[data-testid="stForm"] > div:nth-child(1) {
     flex-direction: column; /* Размещаем элементы формы вертикально */
 }
-
-/* Стили для st.text_area, чтобы оно не было слишком высоким */
-textarea {
-    min-height: 40px; /* Минимальная высота */
-    max-height: 200px; /* Максимальная высота, чтобы не занимало весь экран */
-    overflow-y: auto; /* Показываем скроллбар, если текст превышает max-height */
-}
 </style>
 """, unsafe_allow_html=True)
 
@@ -700,6 +652,7 @@ with st.sidebar:
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
         st.session_state.messages = []
         st.session_state.is_first_message = True # Это новый пустой чат
+        # AI объект будет переинициализирован ниже
         st.rerun()
 
     st.markdown("---")
@@ -713,15 +666,14 @@ with st.sidebar:
                 if st.button(f"💬 {chat_name}", key=f"chat_{chat_name}", use_container_width=True):
                     st.session_state.current_chat_name = chat_name
                     # Force re-initialization of AI object and message loading
-                    st.session_state.ai = AI(user_id, chat_name, redis_manager) # AI.__init__ теперь сам конвертирует историю
+                    st.session_state.ai = AI(user_id, chat_name, redis_manager)
                     st.session_state.messages = [] # Clear current UI messages
-                    # Load raw dictionaries for display purposes
-                    loaded_raw_history_dicts = redis_manager.load_chat_history(user_id, st.session_state.current_chat_name)
-                    
+                    # Load messages from the newly selected chat history
+                    loaded_history_for_display = st.session_state.ai.history
                     # Обновляем is_first_message при каждой загрузке/переключении чата
-                    st.session_state.is_first_message = not bool(loaded_raw_history_dicts)
+                    st.session_state.is_first_message = not bool(loaded_history_for_display)
 
-                    for msg_dict in loaded_raw_history_dicts:
+                    for msg_dict in loaded_history_for_display:
                         if msg_dict.get("role") == "system": continue
                         content_parts = []
                         parts_list = msg_dict.get("parts", [])
@@ -732,8 +684,6 @@ with st.sidebar:
                                 content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
                             elif "unsupported_content" in part_dict:
                                 content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
-                            else:
-                                content_parts.append(f"[[Неизвестный контент]]")
                         st.session_state.messages.append({"role": "user" if msg_dict.get("role") == "user" else "assistant", "content": "".join(content_parts)})
                     st.rerun()
     else:
@@ -745,6 +695,10 @@ for i, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         if message["role"] == "assistant":
             # Используем регулярное выражение для поиска блоков кода Mermaid
+            # Ищем блоки, начинающиеся с ``` и содержащие одну из ключевых фраз Mermaid,
+            # и заканчивающиеся на ```. `re.DOTALL` важен для многострочных блоков.
+            # Группа 1: тип диаграммы (mermaid, graph TD и т.д.)
+            # Группа 2: сам код диаграммы
             mermaid_pattern = r'```(mermaid|graph TD|sequenceDiagram|classDiagram|stateDiagram-v2|journey|gantt|erDiagram|gitGraph)\n(.*?)\n```'
             
             # Разделяем сообщение на части: обычный текст и Mermaid-блоки
@@ -752,19 +706,26 @@ for i, message in enumerate(st.session_state.messages):
             
             current_text_buffer = "" # Буфер для накопления обычного текста
             
+            # Parts будет выглядеть примерно так:
+            # [текст_до_1_блока, тип_1, код_1, текст_до_2_блока, тип_2, код_2, ..., текст_после_всех_блоков]
+            # Если нет совпадений, parts будет состоять из одного элемента: [message["content"]]
+
             for j, part in enumerate(parts):
                 if j % 3 == 0: # Это обычный текст
                     current_text_buffer += part
                 elif j % 3 == 1: # Это тип диаграммы (например, 'graph TD'), пропускаем
                     pass
                 elif j % 3 == 2: # Это код диаграммы
-                    if current_text_buffer.strip(): 
+                    # Если перед этим блоком был накопленный текст, выводим его
+                    if current_text_buffer.strip(): # Проверяем, что буфер не пустой или состоит только из пробелов
                         st.markdown(current_text_buffer.strip())
-                    current_text_buffer = "" 
+                    current_text_buffer = "" # Очищаем буфер после вывода
                     
                     mermaid_code = part.strip()
+                    # Отображаем Mermaid-диаграмму
                     st_mermaid(mermaid_code, key=f"mermaid_diag_{i}_{j}")
             
+            # Выводим оставшийся текст, который мог быть после последнего блока или если блоков не было
             if current_text_buffer.strip():
                 st.markdown(current_text_buffer.strip())
         else:
@@ -774,67 +735,44 @@ for i, message in enumerate(st.session_state.messages):
 # --- Форма для ввода текста и загрузки файла ---
 with st.form("chat_form", clear_on_submit=True):
     # Определяем метку для поля ввода в зависимости от флага is_first_message
-    is_initial_chat_name_input = st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME
+    input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос"
     
-    input_label = "Введите название чата" if is_initial_chat_name_input else "Введите ваш запрос (Ctrl+Enter для отправки)"
+    user_message = st.text_input(input_label, key="user_text_input")
     
-    user_message = "" # Инициализация для области видимости
-
-    if is_initial_chat_name_input:
-        user_message = st.text_input(input_label, key="user_text_input_for_name")
-        uploaded_file = None # В этом режиме файл не грузим
+    # Скрываем file_uploader, если это первый ввод названия чата
+    if not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME):
+        uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") # Добавьте нужные типы файлов
     else:
-        user_message = st.text_area(input_label, key="user_text_area_for_chat", height=80)
-        uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") 
+        uploaded_file = None # Важно явно установить None, если элемент скрыт
 
     submit_button = st.form_submit_button("Отправить")
 
-    # --- JavaScript для отслеживания Ctrl+Enter (только если используется text_area) ---
-    if not is_initial_chat_name_input:
-        js_code = f"""
-        <script>
-            // Используем data-testid для более надежного поиска text_area
-            const textarea = document.querySelector('[data-testid="stFormTextarea"] textarea');
-            if (textarea) {{
-                textarea.addEventListener('keydown', function(e) {{
-                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
-                        const form = textarea.closest('[data-testid="stForm"]');
-                        if (form) {{
-                            const submitButton = form.querySelector('button[kind="primary"]'); 
-                            if (submitButton) {{
-                                submitButton.click();
-                                e.preventDefault(); 
-                            }}
-                        }}
-                    }}
-                }});
-            }}
-        </script>
-        """
-        components.html(js_code, height=0, width=0) 
-
-    # --- Логика отправки сообщения ---
-    if submit_button: 
-        # Проверяем, что есть или сообщение, или файл (если file_uploader доступен)
-        if user_message or (uploaded_file and not is_initial_chat_name_input):
+    if submit_button:
+        if user_message or (uploaded_file and not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME)):
+            # Комбинируем сообщение для отображения
             display_content = user_message if user_message else ""
-            if uploaded_file: 
+            if uploaded_file: # uploaded_file будет None, если скрыт
                 if display_content:
                     display_content += f" (файл: {uploaded_file.name}, {uploaded_file.type})"
                 else:
                     display_content = f"Загружен файл: {uploaded_file.name}, {uploaded_file.type}"
 
+            # Добавляем сообщение пользователя (или заглушку для файла) в UI
             st.session_state.messages.append({"role": "user", "content": display_content})
             with st.chat_message("user"):
                 st.markdown(display_content)
 
+            # Отправляем сообщение AI и получаем ответ
             with st.spinner("Думаю..."):
                 response = ai.send_message(message=user_message, file=uploaded_file)
             
-            st.session_state.is_first_message = False # После отправки первого сообщения, этот флаг становится False
+            # После успешной отправки сообщения, это уже не первое сообщение в чате
+            st.session_state.is_first_message = False
 
+            # Добавляем ответ AI в UI (без парсинга на этом этапе, парсинг происходит при отображении)
             st.session_state.messages.append({"role": "assistant", "content": response})
-            st.rerun() 
+            # Streamlit автоматически перерендерит страницу после этого, обновляя UI
+            st.rerun() # Явный rerun для немедленного отображения нового сообщения и возможного парсинга Mermaid
         else:
             st.warning("Пожалуйста, введите запрос или загрузите файл (если доступно).")
 
@@ -846,6 +784,7 @@ if not (st.session_state.is_first_message and st.session_state.current_chat_name
 
     with col_think:
         think_mode_options = ["NoThink", "Think"]
+        # Убедимся, что ai объект инициализирован перед доступом к его атрибутам
         current_think_mode_index = 1 if hasattr(ai, 'thinking_budget') and ai.thinking_budget > 0 else 0
         
         think_mode_choice = st.selectbox(
@@ -857,9 +796,12 @@ if not (st.session_state.is_first_message and st.session_state.current_chat_name
         )
 
     with col_clear:
+        # Кнопка для очистки (удаления) текущего чата
         if st.button("🗑️", key="clear_history_button_bottom", help="Удалить текущий диалог"):
+            # ai.clear_history() теперь удаляет текущий чат и переключает на "Новый чат"
             if ai.clear_history(): 
                 st.success(f"Диалог '{st.session_state.current_chat_name}' удален.")
-                st.rerun() 
+                st.rerun() # Перезапускаем для отображения "Нового чата"
 
+    # Применяем выбранные настройки только если элементы отображены
     ai.set_chat_settings(model="flash", thinking=(think_mode_choice == "Think"))
