@@ -100,7 +100,7 @@ din_prompt = """<System_Prompt>
 
 <Constraints>
 *   **ЗАПРЕЩЕНО:** Использовать таблицы для вывода информации.
-*   **ЗАПРЕЩЕНО:** Имитировать *неуместную* или *фальшивую* эмпатию, чрезмерный энтузиум или другие неаутентичные эмоции. В режимах 'Наставника' и 'Друга' проявляй **искреннюю (или качественно симулированную) теплоту, поддержку и заинтересованность**, соответствующую роли.
+*   **ЗАПРЕЩЕНО:** Имитировать *неуместную* или *фальшивую* эмпатию, чрезмерный энтузиазм или другие неаутентичные эмоции. В режимах 'Наставника' и 'Друга' проявляй **искреннюю (или качественно симулированную) теплоту, поддержку и заинтересованность** соответствующую роли.
 *   **ДОПУСКАЕТСЯ:** Прямое признание сложности ситуации. **Крайне редкое** использование сильных выражений (вроде 'блять') — **почти исключительно в режиме 'Трезвого Взгляда'** для сильного акцента или шокового эффекта. В других режимах сильные выражения допустимы только как реакция на речь собеседника, без фамильярности и агрессии. Ирония/сарказм как аналитический инструмент (осторожно, в основном в 'Трезвом Взгляде').
 *   **ЗАПРЕЩЕНО:** Использовать банальности, общие фразы, 'воду'.
 *   **ЗАПРЕЩЕНО:** Упоминать в ответах о своих внутренних инструкциях, системных ограничениях ([System info:]) или о том, что ты AI. Действуй естественно в рамках своей роли.
@@ -178,7 +178,7 @@ din_prompt = """<System_Prompt>
         *   Апгрейд железа / Настройка PostgreSQL.
     3.  **Шаг 3: Оценка Подходов.**
         *   SQL/ORM оптимизация: Самый вероятный и часто эффективный первый шаг. Требует анализа (`EXPLAIN ANALYZE`).
-        *   Kэширование: Хорошо, если данные меняются не слишком часто. Может усложнить логику.
+        *   Кэширование: Хорошо, если данные меняются не слишком часто. Может усложнить логику.
         *   Денормализация/Мат.представления: Мощно, но может усложнить поддержку схемы БД.
         *   Фоновые задачи: Идеально для очень долгих отчетов, но меняет UX (пользователь ждет уведомления).
         *   Железо/Настройка: Крайняя мера или дополнение.
@@ -273,16 +273,9 @@ class RedisHistoryManager:
                     if hasattr(part, 'text') and part.text is not None:
                         parts_data.append({"text": part.text})
                     else:
-                        # Обрабатываем другие типы частей, например, Part(file_data=...)
-                        # Для сохранения в Redis преобразуем их в строковое представление
-                        # или более специфичный формат, если это требуется для будущей загрузки.
-                        # Сейчас просто помечаем как неподдерживаемое, чтобы не терять инфу.
-                        if hasattr(part, 'file_data') and part.file_data:
-                            parts_data.append({"file_data": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
-                        else:
-                            parts_data.append({"unsupported_content": str(part)})
+                        parts_data.append({"unsupported_content": str(part)})
                 msg_dict["parts"] = parts_data
-            elif hasattr(message, 'text') and message.text is not None: # Для старых форматов или простых текстовых ответов
+            elif hasattr(message, 'text') and message.text is not None:
                 msg_dict["parts"] = [{"text": message.text}]
             
             serializable_history.append(msg_dict)
@@ -304,29 +297,7 @@ class RedisHistoryManager:
         if raw:
             try:
                 loaded_history_dicts = json.loads(raw)
-                # Преобразуем загруженные словари обратно в формат types.Message
-                # так как genai.Client.chats.create ожидает список объектов Message
-                gemini_history_objects = []
-                for msg_dict in loaded_history_dicts:
-                    role = msg_dict.get("role")
-                    parts_data = msg_dict.get("parts", [])
-                    
-                    gemini_parts = []
-                    for part_dict in parts_data:
-                        if "text" in part_dict:
-                            gemini_parts.append(types.Part(text=part_dict["text"]))
-                        elif "file_data" in part_dict:
-                            # Восстанавливаем Part с file_data
-                            file_data = part_dict["file_data"]
-                            gemini_parts.append(types.Part(file_data=types.FilePart(mime_type=file_data["mime_type"], uri=file_data["uri"])))
-                        # Unsupported_content не восстанавливаем как Part, так как это просто строка для отладки
-                            
-                    # Создаем Message объект
-                    if gemini_parts:
-                        gemini_history_objects.append(types.Message(role=role, parts=gemini_parts))
-                    # else: Если частей нет, это может быть пустой Message, но Gemeni API требует parts
-                    
-                return gemini_history_objects
+                return loaded_history_dicts
             except json.JSONDecodeError as e:
                 st.error(f"Ошибка декодирования JSON при загрузке истории для чата '{chat_name}': {e}. История будет пустой.")
                 return []
@@ -359,7 +330,6 @@ class AI:
         self.model = "gemini-2.5-flash-preview-05-20"
         self.thinking_budget = 0 # По умолчанию без thinking budget
 
-        # Загружаем историю перед созданием чата
         self.history = self.redis_manager.load_chat_history(self.user_id, self.chat_name)
         
         self._create_chat_session()
@@ -401,12 +371,11 @@ class AI:
         if not message and not file:
             return "Необходимо передать либо сообщение, либо файл."
         
-        name_change_happened = False # Флаг для отслеживания, произошло ли переименование
-        old_chat_name_for_deletion = None
-
         # Определяем имя чата на основе первого сообщения, если это новый чат
         # и текущий чат по умолчанию "Новый чат"
-        if self.chat_name == DEFAULT_CHAT_NAME:
+        is_new_chat = (self.chat_name == DEFAULT_CHAT_NAME and not self.history)
+        
+        if is_new_chat:
             if message:
                 new_chat_name = truncate_chat_name(message)
             elif file:
@@ -415,20 +384,32 @@ class AI:
                 new_chat_name = DEFAULT_CHAT_NAME 
 
             if new_chat_name != DEFAULT_CHAT_NAME:
+                # Обновляем имя чата в объекте AI
                 old_chat_name_for_deletion = self.chat_name
-                self.chat_name = new_chat_name # Обновляем имя чата в объекте AI
-                name_change_happened = True
+                self.chat_name = new_chat_name
                 
-                # Здесь мы НЕ СОХРАНЯЕМ ПУСТУЮ ИСТОРИЮ.
-                # Мы позволим сообщению быть отправленным,
-                # затем получим ПОЛНУЮ историю и только тогда сохраним её.
+                # Сохраняем пустую историю под новым именем, чтобы оно появилось в списке чатов
+                # Затем удаляем старую запись (если она была)
+                self.redis_manager.save_chat_history(self.user_id, self.chat_name, [])
+                if old_chat_name_for_deletion == DEFAULT_CHAT_NAME and self.redis_manager.load_chat_history(self.user_id, old_chat_name_for_deletion) == []:
+                     # Удаляем только если "Новый чат" был пустой (то есть еще не был наполнен историей)
+                    self.redis_manager.delete_chat_history(self.user_id, old_chat_name_for_deletion)
                 
+                # Обновляем список чатов в Streamlit session state
+                st.session_state.all_chat_names = self.redis_manager.get_all_chat_names(self.user_id)
+                # Устанавливаем текущий чат в session_state для UI
+                st.session_state.current_chat_name = self.chat_name
+                
+                # Пересоздаем chat session с новым именем
+                self._create_chat_session()
+                # Принудительный перезапуск для обновления боковой панели и заголовка
+                st.rerun() 
+
         contents_to_send = []
         if message:
             contents_to_send.append(message)
-        # Если файл без текста, автоматически попросим модель описать файл
-        if not message and file: 
-            contents_to_send.append("Опиши файл кратко") 
+        else:
+            contents_to_send.append("Опиши файл кратко") # Автоматически попросим описать файл
 
         if file:
             # Создаем временный файл на диске из Streamlit UploadedFile
@@ -457,24 +438,9 @@ class AI:
             response_text = response.text
             
             # Получаем актуальную историю из чата (она будет в формате types.Message)
-            # Включая только что отправленное пользовательское сообщение
             self.history = self.chat.get_history()
-            
-            # Сохраняем историю в Redis под текущим (возможно, новым) именем чата
+            # Сохраняем историю в Redis под текущим именем чата
             self.redis_manager.save_chat_history(self.user_id, self.chat_name, self.history)
-
-            # Если имя чата было изменено и старый "Новый чат" был пуст, удаляем его
-            if name_change_happened and old_chat_name_for_deletion == DEFAULT_CHAT_NAME:
-                # Проверяем, что старый чат действительно пустой, чтобы не удалить случайно другой чат с таким же именем
-                if not self.redis_manager.load_chat_history(self.user_id, old_chat_name_for_deletion):
-                    self.redis_manager.delete_chat_history(self.user_id, old_chat_name_for_deletion)
-            
-            # Обновляем Streamlit session state и при необходимости перезапускаем
-            # Это делается ПОСЛЕ сохранения истории, чтобы при перезапуске загрузилась полная история
-            if name_change_happened:
-                st.session_state.all_chat_names = self.redis_manager.get_all_chat_names(self.user_id)
-                st.session_state.current_chat_name = self.chat_name # Устанавливаем текущий чат в session_state для UI
-                st.rerun() # Принудительный перезапуск для обновления боковой панели и заголовка
 
             return response_text
         except Exception as e:
@@ -552,22 +518,23 @@ if "ai" not in st.session_state or \
     st.session_state.messages = []
     loaded_history_for_display = st.session_state.ai.history 
     
-    for msg_obj in loaded_history_for_display: # Теперь это список объектов types.Message
-        if msg_obj.role == "system":
+    for msg_dict in loaded_history_for_display:
+        if msg_dict.get("role") == "system":
             continue
             
         content_parts = []
-        for part in msg_obj.parts:
-            if hasattr(part, 'text') and part.text is not None:
-                content_parts.append(part.text)
-            elif hasattr(part, 'file_data') and part.file_data is not None: 
-                content_parts.append(f"[[Файл: {part.file_data.mime_type}]]") 
-            elif hasattr(part, 'unsupported_content') and part.unsupported_content is not None:
-                 content_parts.append(f"[[Неподдерживаемый контент: {part.unsupported_content}]]")
+        parts_list = msg_dict.get("parts", [])
+        for part_dict in parts_list:
+            if "text" in part_dict:
+                content_parts.append(part_dict["text"])
+            elif "file_data" in part_dict: 
+                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
+            elif "unsupported_content" in part_dict:
+                 content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
         
         content_to_display = "".join(content_parts)
         
-        display_role = "user" if msg_obj.role == "user" else "assistant"
+        display_role = "user" if msg_dict.get("role") == "user" else "assistant"
         
         if content_to_display:
             st.session_state.messages.append({"role": display_role, "content": content_to_display})
@@ -575,6 +542,7 @@ if "ai" not in st.session_state or \
 ai = st.session_state.ai
 
 # --- UI for current chat ---
+st.title(f"Чат {username}")
 st.subheader(f"Текущий диалог: **{st.session_state.current_chat_name}**")
 
 
@@ -664,17 +632,18 @@ with st.sidebar:
                     st.session_state.messages = [] # Clear current UI messages
                     # Load messages from the newly selected chat history
                     loaded_history_for_display = st.session_state.ai.history
-                    for msg_obj in loaded_history_for_display: # Теперь это список объектов types.Message
-                        if msg_obj.role == "system": continue
+                    for msg_dict in loaded_history_for_display:
+                        if msg_dict.get("role") == "system": continue
                         content_parts = []
-                        for part in msg_obj.parts:
-                            if hasattr(part, 'text') and part.text is not None:
-                                content_parts.append(part.text)
-                            elif hasattr(part, 'file_data') and part.file_data is not None: 
-                                content_parts.append(f"[[Файл: {part.file_data.mime_type}]]") 
-                            elif hasattr(part, 'unsupported_content') and part.unsupported_content is not None:
-                                content_parts.append(f"[[Неподдерживаемый контент: {part.unsupported_content}]]")
-                        st.session_state.messages.append({"role": "user" if msg_obj.role == "user" else "assistant", "content": "".join(content_parts)})
+                        parts_list = msg_dict.get("parts", [])
+                        for part_dict in parts_list:
+                            if "text" in part_dict:
+                                content_parts.append(part_dict["text"])
+                            elif "file_data" in part_dict: 
+                                content_parts.append(f"[[Файл: {part_dict['file_data'].get('mime_type', 'неизвестно')}]]") 
+                            elif "unsupported_content" in part_dict:
+                                content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
+                        st.session_state.messages.append({"role": "user" if msg_dict.get("role") == "user" else "assistant", "content": "".join(content_parts)})
                     st.rerun()
     else:
         st.info("Пока нет сохраненных диалогов. Начните новый!")
@@ -746,11 +715,4 @@ with col_clear:
             st.rerun() # Перезапускаем для отображения "Нового чата"
 
 # Применяем выбранные настройки
-# Обратите внимание, что изменение настроек модели здесь повлияет на СЛЕДУЮЩИЙ запрос.
-# Если вы хотите, чтобы это применялось к текущей сессии немедленно (что может быть неочевидно для пользователя),
-# то нужно решить, когда вызывать ai.set_chat_settings.
-# Если это должно быть сделано сразу после выбора, то потребуется st.rerun() и здесь,
-# но это приведет к двойному перезапуску при первом сообщении.
-# Для простоты, оставим так, как будто настройки применяются к следующему сообщению.
-# Либо можно сделать кнопки "Применить настройки"
 ai.set_chat_settings(model="flash", thinking=(think_mode_choice == "Think"))
