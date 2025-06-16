@@ -9,6 +9,7 @@ from google.genai import types
 import datetime # Для генерации имени чата
 from streamlit_mermaid import st_mermaid # Импортируем компонент для Mermaid
 import re # Для регулярных выражений, чтобы найти блоки Mermaid
+import streamlit.components.v1 as components # Для внедрения HTML/JS
 
 # --- 1. ПЕРЕМЕЩАЕМ st.set_page_config В НАЧАЛО ---
 # Эта команда должна быть первой!
@@ -26,7 +27,7 @@ if "genai_client" not in st.session_state:
     st.session_state.genai_client = genai.Client(api_key=api_key)
 client = st.session_state.genai_client
 
-# Глобальный промпт для системной инструкции
+# Глобальный промпт для системной инструкции (без изменений)
 din_prompt = """<System_Prompt>
 
 <Role_Definition>
@@ -186,7 +187,7 @@ din_prompt = """<System_Prompt>
         *   Железо/Настройка: Крайняя мера или дополнение.
     4.  **Шаг 4: Формирование Решения.** Начинать нужно с наименее инвазивных и наиболее вероятных методов:
         *   **План:**
-            а) **Анализ запросов:** Используй `django-debug-toolbar` и `EXPLAIN ANALYZE` в psql, чтобы найти самые медленные SQL-запросы. Это покажет узкие места.
+            а) **Анализ запросов:** Используй `django-debug-toolbar` и `EXPLAIN ANALYZE` в psql, чтобы найти самые медленные SQL-запросы.
             б) **Оптимизация БД/ORM:** На основе анализа добавь нужные индексы. Перепиши тяжелые запросы, используй `select_related/prefetch_related`.
             в) **Кэширование:** Если (а) и (б) недостаточно, внедряй кэширование результатов запросов или фрагментов (`django.core.cache`).
             г) **Фоновые задачи:** Если отчет принципиально долгий, вынеси генерацию в фон (Celery + Redis + RabbitMQ).
@@ -533,6 +534,10 @@ if "is_first_message" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# Добавляем флаг для Ctrl+Enter
+if "send_message_triggered" not in st.session_state:
+    st.session_state.send_message_triggered = False
+
 # Переинициализация AI объекта, если пользователь или чат изменились
 # Это должно быть после инициализации всех session_state переменных
 redis_manager = st.session_state.redis_manager # Ссылка на менеджер из session_state
@@ -641,6 +646,13 @@ div[data-testid="stColumn"]:nth-child(2) { /* Вторая колонка - дл
 div[data-testid="stForm"] > div:nth-child(1) {
     flex-direction: column; /* Размещаем элементы формы вертикально */
 }
+
+/* Стили для st.text_area, чтобы оно не было слишком высоким */
+textarea {
+    min-height: 40px; /* Минимальная высота */
+    max-height: 200px; /* Максимальная высота, чтобы не занимало весь экран */
+    overflow-y: auto; /* Показываем скроллбар, если текст превышает max-height */
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -652,7 +664,7 @@ with st.sidebar:
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
         st.session_state.messages = []
         st.session_state.is_first_message = True # Это новый пустой чат
-        # AI объект будет переинициализирован ниже
+        st.session_state.send_message_triggered = False # Сброс триггера
         st.rerun()
 
     st.markdown("---")
@@ -672,6 +684,7 @@ with st.sidebar:
                     loaded_history_for_display = st.session_state.ai.history
                     # Обновляем is_first_message при каждой загрузке/переключении чата
                     st.session_state.is_first_message = not bool(loaded_history_for_display)
+                    st.session_state.send_message_triggered = False # Сброс триггера
 
                     for msg_dict in loaded_history_for_display:
                         if msg_dict.get("role") == "system": continue
@@ -695,10 +708,6 @@ for i, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         if message["role"] == "assistant":
             # Используем регулярное выражение для поиска блоков кода Mermaid
-            # Ищем блоки, начинающиеся с ``` и содержащие одну из ключевых фраз Mermaid,
-            # и заканчивающиеся на ```. `re.DOTALL` важен для многострочных блоков.
-            # Группа 1: тип диаграммы (mermaid, graph TD и т.д.)
-            # Группа 2: сам код диаграммы
             mermaid_pattern = r'```(mermaid|graph TD|sequenceDiagram|classDiagram|stateDiagram-v2|journey|gantt|erDiagram|gitGraph)\n(.*?)\n```'
             
             # Разделяем сообщение на части: обычный текст и Mermaid-блоки
@@ -706,26 +715,19 @@ for i, message in enumerate(st.session_state.messages):
             
             current_text_buffer = "" # Буфер для накопления обычного текста
             
-            # Parts будет выглядеть примерно так:
-            # [текст_до_1_блока, тип_1, код_1, текст_до_2_блока, тип_2, код_2, ..., текст_после_всех_блоков]
-            # Если нет совпадений, parts будет состоять из одного элемента: [message["content"]]
-
             for j, part in enumerate(parts):
                 if j % 3 == 0: # Это обычный текст
                     current_text_buffer += part
                 elif j % 3 == 1: # Это тип диаграммы (например, 'graph TD'), пропускаем
                     pass
                 elif j % 3 == 2: # Это код диаграммы
-                    # Если перед этим блоком был накопленный текст, выводим его
-                    if current_text_buffer.strip(): # Проверяем, что буфер не пустой или состоит только из пробелов
+                    if current_text_buffer.strip(): 
                         st.markdown(current_text_buffer.strip())
-                    current_text_buffer = "" # Очищаем буфер после вывода
+                    current_text_buffer = "" 
                     
                     mermaid_code = part.strip()
-                    # Отображаем Mermaid-диаграмму
                     st_mermaid(mermaid_code, key=f"mermaid_diag_{i}_{j}")
             
-            # Выводим оставшийся текст, который мог быть после последнего блока или если блоков не было
             if current_text_buffer.strip():
                 st.markdown(current_text_buffer.strip())
         else:
@@ -735,29 +737,66 @@ for i, message in enumerate(st.session_state.messages):
 # --- Форма для ввода текста и загрузки файла ---
 with st.form("chat_form", clear_on_submit=True):
     # Определяем метку для поля ввода в зависимости от флага is_first_message
-    input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос"
+    input_label = "Введите название чата" if st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME else "Введите ваш запрос (Ctrl+Enter для отправки)"
     
-    user_message = st.text_input(input_label, key="user_text_input")
-    
+    # Используем st.text_area вместо st.text_input
+    user_message = st.text_area(input_label, key="user_text_area", height=80) # Устанавливаем высоту по умолчанию
+
     # Скрываем file_uploader, если это первый ввод названия чата
     if not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME):
-        uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") # Добавьте нужные типы файлов
+        uploaded_file = st.file_uploader("Загрузить файл", label_visibility="collapsed", type=["pdf", "png", "jpg", "jpeg", "ogg", "mp3", "wav", "txt", "py", "md", "html", "csv"], key="file_uploader") 
     else:
-        uploaded_file = None # Важно явно установить None, если элемент скрыт
+        uploaded_file = None 
 
     submit_button = st.form_submit_button("Отправить")
 
-    if submit_button:
+    # --- JavaScript для отслеживания Ctrl+Enter ---
+    # Важно: этот HTML-компонент должен быть после st.text_area, чтобы его id был доступен
+    # В Streamlit id элементов генерируются динамически, поэтому лучше найти textarea по атрибуту
+    # или использовать custom id, если это возможно. text_area имеет data-testid="stFormTextarea"
+    
+    js_code = f"""
+    <script>
+        const textarea = document.querySelector('[data-testid="stFormTextarea"] textarea');
+        if (textarea) {{
+            textarea.addEventListener('keydown', function(e) {{
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {{
+                    // Устанавливаем значение в Streamlit Session State
+                    // Streamlit.setComponentValue("send_message_triggered_key", true);
+                    // Вместо прямого вызова компонента, мы можем симулировать клик по кнопке отправки
+                    // (если кнопка видна и находится в той же форме)
+                    const form = textarea.closest('[data-testid="stForm"]');
+                    if (form) {{
+                        const submitButton = form.querySelector('button[kind="primary"]'); // Ищем главную кнопку отправки
+                        if (submitButton) {{
+                            submitButton.click();
+                            e.preventDefault(); // Предотвращаем стандартное поведение Enter (новую строку)
+                        }}
+                    }}
+                }}
+            }});
+        }}
+    </script>
+    """
+    components.html(js_code, height=0, width=0) # height/width 0, чтобы не занимал место
+
+    # --- Логика отправки сообщения ---
+    # Мы полагаемся на submit_button.click(), вызванный JS при Ctrl+Enter
+    # или на прямой клик пользователя по кнопке "Отправить"
+    if submit_button: # submit_button.click() устанавливает submit_button в True
         if user_message or (uploaded_file and not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME)):
+            # Очищаем триггер, если он был установлен (хотя submit_button уже сбрасывается)
+            st.session_state.send_message_triggered = False 
+
             # Комбинируем сообщение для отображения
             display_content = user_message if user_message else ""
-            if uploaded_file: # uploaded_file будет None, если скрыт
+            if uploaded_file: 
                 if display_content:
                     display_content += f" (файл: {uploaded_file.name}, {uploaded_file.type})"
                 else:
                     display_content = f"Загружен файл: {uploaded_file.name}, {uploaded_file.type}"
 
-            # Добавляем сообщение пользователя (или заглушку для файла) в UI
+            # Добавляем сообщение пользователя в UI
             st.session_state.messages.append({"role": "user", "content": display_content})
             with st.chat_message("user"):
                 st.markdown(display_content)
@@ -769,22 +808,19 @@ with st.form("chat_form", clear_on_submit=True):
             # После успешной отправки сообщения, это уже не первое сообщение в чате
             st.session_state.is_first_message = False
 
-            # Добавляем ответ AI в UI (без парсинга на этом этапе, парсинг происходит при отображении)
+            # Добавляем ответ AI в UI
             st.session_state.messages.append({"role": "assistant", "content": response})
-            # Streamlit автоматически перерендерит страницу после этого, обновляя UI
-            st.rerun() # Явный rerun для немедленного отображения нового сообщения и возможного парсинга Mermaid
+            st.rerun() # Явный rerun для немедленного отображения нового сообщения
         else:
             st.warning("Пожалуйста, введите запрос или загрузите файл (если доступно).")
 
 
 # --- Выбор режима (Selectbox) и кнопка очистки истории (иконка) ---
-# Эти элементы также скрываем, если это первый ввод названия чата
 if not (st.session_state.is_first_message and st.session_state.current_chat_name == DEFAULT_CHAT_NAME):
     col_think, col_clear = st.columns([0.2, 0.8]) 
 
     with col_think:
         think_mode_options = ["NoThink", "Think"]
-        # Убедимся, что ai объект инициализирован перед доступом к его атрибутам
         current_think_mode_index = 1 if hasattr(ai, 'thinking_budget') and ai.thinking_budget > 0 else 0
         
         think_mode_choice = st.selectbox(
@@ -796,12 +832,9 @@ if not (st.session_state.is_first_message and st.session_state.current_chat_name
         )
 
     with col_clear:
-        # Кнопка для очистки (удаления) текущего чата
         if st.button("🗑️", key="clear_history_button_bottom", help="Удалить текущий диалог"):
-            # ai.clear_history() теперь удаляет текущий чат и переключает на "Новый чат"
             if ai.clear_history(): 
                 st.success(f"Диалог '{st.session_state.current_chat_name}' удален.")
-                st.rerun() # Перезапускаем для отображения "Нового чата"
+                st.rerun() 
 
-    # Применяем выбранные настройки только если элементы отображены
     ai.set_chat_settings(model="flash", thinking=(think_mode_choice == "Think"))
