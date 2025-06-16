@@ -5,7 +5,10 @@ import hashlib, base64
 import redis # <-- Добавляем импорт redis
 from google import genai
 from google.genai import types # Импорт необходим для базовых типов Gemini API
-
+st.set_page_config(
+    page_title="AI Interaction Mini App",
+    layout="centered"
+)
 # Инициализация API ключа из Streamlit Secrets
 api_key = st.secrets["GOOGLE_API_KEY"]
 
@@ -509,11 +512,6 @@ if "ai" not in st.session_state or st.session_state.get("user_id") != user_id:
 
 # После инициализации, получаем ссылку на AI объект из session_state
 ai = st.session_state.ai
-
-st.set_page_config(
-    page_title="AI Interaction Mini App",
-    layout="centered"
-)
 
 st.title(f"Чат {username}")
 
