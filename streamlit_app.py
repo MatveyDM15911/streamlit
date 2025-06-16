@@ -5,7 +5,7 @@ import hashlib, base64
 import redis
 import tempfile # Для создания временных файлов
 from google import genai
-from google.genai import types
+from google.genai import types # types все равно нужен для импорта, но не будет напрямую использоваться в AI классе
 import datetime # Для генерации имени чата и меток времени
 
 # --- 1. ПЕРЕМЕЩАЕМ st.set_page_config В НАЧАЛО ---
@@ -238,33 +238,6 @@ def truncate_chat_name(text: str) -> str:
         return text[:MAX_CHAT_NAME_LENGTH] + "..."
     return text
 
-# Вспомогательная функция для загрузки истории из AI объекта в формат для отображения в UI
-def _load_history_for_display(ai_instance):
-    messages_for_display = []
-    # ai_instance.get_history() теперь возвращает список словарей, сохраненных в Redis
-    loaded_history = ai_instance.get_history() 
-    for msg_dict in loaded_history:
-        if msg_dict.get("role") == "system":
-            continue
-            
-        content_parts = []
-        parts_list = msg_dict.get("parts", [])
-        for part_dict in parts_list:
-            if "text" in part_dict:
-                content_parts.append(part_dict["text"])
-            elif "file_data_placeholder" in part_dict: 
-                content_parts.append(f"[[Файл: {part_dict['file_data_placeholder'].get('mime_type', 'неизвестно')}]]") 
-            elif "unsupported_content" in part_dict:
-                 content_parts.append(f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]")
-        
-        content_to_display = "".join(content_parts)
-        
-        display_role = "user" if msg_dict.get("role") == "user" else "assistant"
-        
-        if content_to_display:
-            messages_for_display.append({"role": display_role, "content": content_to_display})
-    return messages_for_display
-
 # Класс для управления историей в Redis
 class RedisHistoryManager:
     def __init__(self):
@@ -291,15 +264,68 @@ class RedisHistoryManager:
         """Ключ для хеша с содержимым истории чатов пользователя."""
         return f"{user_id}:history"
 
-    def save_chat_history(self, user_id: str, chat_name: str, history_list_as_dicts):
+    def _convert_gemini_messages_to_dicts(self, gemini_history: list[types.Message]) -> list[dict]:
+        """Конвертирует историю из формата types.Message (от Gemini API) в формат словарей (для Redis и UI)."""
+        serializable_history = []
+        for message in gemini_history:
+            msg_dict = {"role": message.role}
+            parts_data = []
+            if hasattr(message, 'parts'):
+                for part in message.parts:
+                    if hasattr(part, 'text') and part.text is not None:
+                        parts_data.append({"text": part.text})
+                    elif hasattr(part, 'file_data') and part.file_data is not None:
+                        # Сохраняем плейсхолдер для файлов, так как сам объект File не сериализуем.
+                        parts_data.append({"file_data_placeholder": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
+                    else:
+                        parts_data.append({"unsupported_content": str(part)})
+                msg_dict["parts"] = parts_data
+            elif hasattr(message, 'text') and message.text is not None:
+                msg_dict["parts"] = [{"text": message.text}]
+            
+            serializable_history.append(msg_dict)
+        return serializable_history
+
+    def _convert_dicts_to_gemini_messages(self, dict_history: list[dict]) -> list[types.Message]:
+        """Конвертирует историю из формата словарей (для Redis) в формат types.Message (для Gemini API)."""
+        gemini_messages = []
+        for msg_dict in dict_history:
+            role = msg_dict.get("role")
+            parts_list = []
+            for part_dict in msg_dict.get("parts", []):
+                if "text" in part_dict:
+                    parts_list.append(types.TextPart(text=part_dict["text"]))
+                elif "file_data_placeholder" in part_dict:
+                    # Создаем фиктивный FileDataPart. Uri будет ссылаться на ранее загруженный файл.
+                    # Это позволяет Gemini API "видеть" ссылку на файл, если она была в оригинальном запросе.
+                    # Важно: сам файл уже должен быть загружен на Google AI Platform Files API.
+                    parts_list.append(types.FileDataPart(
+                        mime_type=part_dict["file_data_placeholder"].get("mime_type", "application/octet-stream"),
+                        uri=part_dict["file_data_placeholder"].get("uri", "")
+                    ))
+                elif "unsupported_content" in part_dict:
+                    # Если есть неподдерживаемый контент, для Gemini API можно проигнорировать
+                    # или попытаться представить как текст для сохранения контекста, если возможно.
+                    parts_list.append(types.TextPart(text=f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]"))
+            
+            # Добавляем сообщение, только если у него есть части
+            if parts_list:
+                gemini_messages.append(types.Message(role=role, parts=parts_list))
+        return gemini_messages
+
+
+    def save_chat_history(self, user_id: str, chat_name: str, gemini_history: list[types.Message]):
         """
         Сохраняет историю чата для пользователя в Redis под заданным именем чата.
-        history_list_as_dicts - это список словарей, полученный из _convert_gemini_messages_to_dicts.
+        history_list_from_gemini - это список объектов google.genai.types.Message.
+        Преобразуем их в ваш формат словарей.
         """
         user_id_str = str(user_id)
         
+        serializable_history = self._convert_gemini_messages_to_dicts(gemini_history)
+        
         try:
-            json_data = json.dumps(history_list_as_dicts, ensure_ascii=False)
+            json_data = json.dumps(serializable_history, ensure_ascii=False)
             pipeline = self.r.pipeline()
             # Сохраняем историю в хеш
             pipeline.hset(self.get_chat_history_key(user_id), chat_name, json_data)
@@ -312,7 +338,7 @@ class RedisHistoryManager:
     def load_chat_history(self, user_id: str, chat_name: str) -> list[dict]:
         """
         Загружает историю конкретного чата для пользователя из Redis.
-        Возвращает список словарей, как они были сохранены.
+        Возвращает список словарей, как они были сохранены (а не types.Message).
         """
         user_id_str = str(user_id)
         raw = self.r.hget(self.get_chat_history_key(user_id), chat_name)
@@ -332,9 +358,6 @@ class RedisHistoryManager:
         """Возвращает список всех имен чатов для данного пользователя, отсортированных по убыванию времени (свежие сверху)."""
         user_id_str = str(user_id)
         try:
-            # ZREVRANGEBYSCORE key max min returns elements in reverse order
-            # (newest first). -inf and +inf are for unbounded range.
-            # withscores=False by default, so just members are returned.
             return self.r.zrevrangebyscore(self.get_chat_set_key(user_id), '+inf', '-inf')
         except Exception as e:
             st.error(f"Ошибка при получении списка чатов для пользователя {user_id}: {e}")
@@ -359,69 +382,23 @@ class AI:
         self.model = "gemini-2.5-flash-preview-05-20"
         self.thinking_budget = 0 # По умолчанию без thinking budget
 
-        # history_for_redis будет списком словарей (то, что загружаем/сохраняем из Redis)
-        self.history_for_redis = self.redis_manager.load_chat_history(self.user_id, self.chat_name)
+        # history будет хранить историю в виде списка словарей, как в Redis
+        self.history = self.redis_manager.load_chat_history(self.user_id, self.chat_name)
         
-        # _gemini_history будет списком объектов types.Message для работы с Gemini API
-        self._gemini_history = self._convert_dicts_to_gemini_messages(self.history_for_redis)
-        
+        # chat сессия инициализируется здесь, конвертируя историю из словарей
         self._create_chat_session()
     
-    def _convert_dicts_to_gemini_messages(self, dict_history: list[dict]) -> list[types.Message]:
-        """Конвертирует историю из формата словарей (для Redis) в формат types.Message (для Gemini API)."""
-        gemini_messages = []
-        for msg_dict in dict_history:
-            role = msg_dict.get("role")
-            parts_data = []
-            for part_dict in msg_dict.get("parts", []):
-                if "text" in part_dict:
-                    parts_data.append(part_dict["text"])
-                # Если бы мы сохраняли URI файлов, то здесь бы восстанавливали File object
-                # Для этого примера предполагаем, что файлы не сохраняются в истории Redis
-                elif "file_data_placeholder" in part_dict:
-                    # Это просто заглушка для отображения, модель ее не поймет
-                    pass 
-                elif "unsupported_content" in part_dict:
-                    pass # Невозможно восстановить для модели
-            
-            # Добавляем только если есть текстовые части
-            if parts_data:
-                gemini_messages.append(types.Message(role=role, parts=parts_data))
-        return gemini_messages
-
-    def _convert_gemini_messages_to_dicts(self, gemini_history: list[types.Message]) -> list[dict]:
-        """Конвертирует историю из формата types.Message (от Gemini API) в формат словарей (для Redis)."""
-        serializable_history = []
-        for message in gemini_history:
-            msg_dict = {"role": message.role}
-            parts_data = []
-            if hasattr(message, 'parts'):
-                for part in message.parts:
-                    if hasattr(part, 'text') and part.text is not None:
-                        parts_data.append({"text": part.text})
-                    elif hasattr(part, 'file_data') and part.file_data is not None:
-                        # Сохраняем только плейсхолдер, не сами данные файла или его URI, 
-                        # так как файлы временны и могут быть недоступны позже.
-                        parts_data.append({"file_data_placeholder": {"mime_type": part.file_data.mime_type, "uri": part.file_data.uri}})
-                    else:
-                        parts_data.append({"unsupported_content": str(part)})
-                msg_dict["parts"] = parts_data
-            elif hasattr(message, 'text') and message.text is not None:
-                msg_dict["parts"] = [{"text": message.text}]
-            
-            serializable_history.append(msg_dict)
-        return serializable_history
-
     def _create_chat_session(self):
-        """Создает или пересоздает сессию чата с учетом текущей истории."""
+        """Создает или пересоздает сессию чата, конвертируя текущую историю."""
+        gemini_history_for_session = self.redis_manager._convert_dicts_to_gemini_messages(self.history)
         self.chat = client.chats.create(
             model=self.model,
-            config=types.GenerateContentConfig(
+            config=types.GenerateContentConfig( # types здесь допустим, это часть API genai
                 safety_settings=safety_settings,
                 system_instruction=din_prompt,
-                thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget)
+                thinking_config=types.ThinkingConfig(thinking_budget=self.thinking_budget) # types здесь допустим
             ),
-            history=self._gemini_history # Передаем историю в формате types.Message
+            history=gemini_history_for_session # Передаем историю в формате types.Message
         )
     
     def set_chat_settings(self, model: str = None, thinking: bool = None):
@@ -443,10 +420,10 @@ class AI:
         if settings_changed:
             self._create_chat_session() # Пересоздаем сессию с новыми настройками
     
-    def get_chat_name(self):
+    def get_chat_name(self) -> str:
         return self.chat_name
 
-    def send_message(self, message=None, file=None):
+    def send_message(self, message: str = None, file=None) -> str:
         if not message and not file:
             return "Необходимо передать либо сообщение, либо файл."
         
@@ -462,11 +439,12 @@ class AI:
                 tmp_file.write(file.getvalue())
                 temp_file_path = tmp_file.name
             try:
+                # types.UploadFileConfig здесь допустим, это часть API genai
                 uploaded_google_file = client.files.upload(
                     file=temp_file_path, 
-                    config=types.UploadFileConfig(display_name=file.name)
+                    config=types.UploadFileConfig(display_name=file.name) 
                 )
-                contents_to_send.append(uploaded_google_file)
+                contents_to_send.append(uploaded_google_file) # uploaded_google_file здесь является File object (subclass of types.Part)
             finally:
                 os.remove(temp_file_path)
 
@@ -476,14 +454,14 @@ class AI:
             response = self.chat.send_message(contents_to_send)
             response_text = response.text
             
-            # Получаем актуальную историю из чата (она будет в формате types.Message)
-            self._gemini_history = self.chat.get_history()
+            # Получаем актуальную историю из чата (она в формате types.Message)
+            gemini_full_history = self.chat.get_history()
             
             # Конвертируем историю в словари для сохранения в Redis
-            self.history_for_redis = self._convert_gemini_messages_to_dicts(self._gemini_history)
+            self.history = self.redis_manager._convert_gemini_messages_to_dicts(gemini_full_history)
             
             # Сохраняем историю в Redis под текущим именем чата
-            self.redis_manager.save_chat_history(self.user_id, self.chat_name, self.history_for_redis)
+            self.redis_manager.save_chat_history(self.user_id, self.chat_name, gemini_full_history) # передаем сюда gemini_full_history для конвертации и сохранения
 
             return response_text
         except Exception as e:
@@ -491,15 +469,15 @@ class AI:
             return f"Извините, произошла ошибка. Пожалуйста, попробуйте еще раз. Детали ошибки: {e}"
 
     def get_history(self) -> list[dict]:
-        """Возвращает историю чата в формате словарей для UI и сохранения в Redis."""
-        return self.history_for_redis
+        """Возвращает историю чата в формате словарей для UI."""
+        return self.history
     
     def count_tokens(self) -> int:
-        """Считает токены в текущей истории чата (Gemini-формат)."""
-        # Обновляем историю из чата, прежде чем считать токены
-        self._gemini_history = self.chat.get_history() 
+        """Считает токены в текущей истории чата."""
+        # Для подсчета токенов нужна история в формате types.Message
+        gemini_history_for_counting = self.redis_manager._convert_dicts_to_gemini_messages(self.history)
         try:
-            self.tokens = client.models.count_tokens(model=self.model, contents=self._gemini_history)
+            self.tokens = client.models.count_tokens(model=self.model, contents=gemini_history_for_counting)
             return self.tokens.total_tokens
         except Exception as e:
             return -1
@@ -508,8 +486,7 @@ class AI:
         """Удаляет текущий чат из Redis и сбрасывает состояние AI объекта."""
         if self.redis_manager.delete_chat_history(self.user_id, self.chat_name):
             # Сбрасываем внутренние состояния истории AI объекта
-            self.history_for_redis = [] 
-            self._gemini_history = [] 
+            self.history = [] 
             
             # После удаления текущего чата, переключаемся на "Новый чат"
             # и заставляем Streamlit перерендерить приложение
@@ -553,19 +530,23 @@ elif st.session_state.current_chat_name not in st.session_state.all_chat_names a
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
 
 # Инициализация AI объекта или переинициализация при смене пользователя/чата
+# Это происходит первым делом при каждом rerun
 if "ai" not in st.session_state or \
    st.session_state.get("user_id") != user_id or \
    st.session_state.ai.get_chat_name() != st.session_state.current_chat_name:
     st.session_state.user_id = user_id 
     st.session_state.ai = AI(user_id, st.session_state.current_chat_name, redis_manager)
     # Загружаем сообщения для отображения в UI из AI объекта
-    st.session_state.messages = _load_history_for_display(st.session_state.ai)
+    # AI.history теперь уже в формате словарей, готовом для UI
+    st.session_state.messages = st.session_state.ai.get_history()
     # Обновляем список всех чатов для боковой панели
     st.session_state.all_chat_names = redis_manager.get_all_chat_names(user_id)
 
 ai = st.session_state.ai # Получаем текущий экземпляр AI
 
+
 # --- Обработка отложенного сообщения (после переименования чата и rerun) ---
+# Этот блок должен запускаться *до* основного отображения чата и формы ввода.
 if "_pending_message_text" in st.session_state and st.session_state._pending_message_text is not None:
     pending_message = st.session_state._pending_message_text
     pending_file = st.session_state._pending_uploaded_file
@@ -579,18 +560,14 @@ if "_pending_message_text" in st.session_state and st.session_state._pending_mes
     with st.spinner("Думаю..."):
         response = ai.send_message(message=pending_message, file=pending_file)
     
-    # После отправки, история AI объекта будет обновлена. Загружаем ее для UI.
-    st.session_state.messages = _load_history_for_display(ai)
+    # После send_message, AI's internal history is updated and saved to Redis.
+    # Теперь, обновим сообщения UI из актуальной истории AI объекта.
+    st.session_state.messages = ai.get_history()
     
-    # Добавляем ответ AI в UI (поскольку _load_history_for_display перезагружает всю историю, это может быть избыточно,
-    # но для ясности оставим, если вдруг там не вся история).
-    # Лучше: _load_history_for_display уже содержит все сообщения.
-    # st.session_state.messages.append({"role": "assistant", "content": response}) 
-    
-    # Обновляем список чатов для боковой панели еще раз, так как новый чат теперь имеет историю и имя.
+    # Обновляем список чатов в боковой панели, чтобы отразить новое имя чата
     st.session_state.all_chat_names = redis_manager.get_all_chat_names(user_id)
-    # Инициируем еще один rerun, чтобы боковая панель и заголовок полностью обновились
-    # с новым, теперь уже заполненным, чатом.
+    
+    # Принудительный перезапуск для полного обновления UI
     st.rerun()
 
 
@@ -667,7 +644,6 @@ with st.sidebar:
     if st.button("➕ Новый чат", use_container_width=True):
         st.session_state.current_chat_name = DEFAULT_CHAT_NAME
         st.session_state.messages = []
-        # AI объект будет переинициализирован при следующем запуске скрипта
         st.rerun()
 
     st.markdown("---")
@@ -679,17 +655,32 @@ with st.sidebar:
             else:
                 if st.button(f"💬 {chat_name}", key=f"chat_{chat_name}", use_container_width=True):
                     st.session_state.current_chat_name = chat_name
-                    # Принудительная переинициализация AI объекта и загрузка сообщений
-                    # Это произойдет в начале скрипта на следующем запуске, после st.rerun()
                     st.rerun()
     else:
         st.info("Пока нет сохраненных диалогов. Начните новый!")
 
 
 # Отображаем существующие сообщения из st.session_state.messages
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# st.session_state.messages содержит историю в виде словарей
+for message_dict in st.session_state.messages:
+    if message_dict.get("role") == "system":
+        continue
+    
+    content_to_display = ""
+    parts_list = message_dict.get("parts", [])
+    for part_dict in parts_list:
+        if "text" in part_dict:
+            content_to_display += part_dict["text"]
+        elif "file_data_placeholder" in part_dict: 
+            content_to_display += f"[[Файл: {part_dict['file_data_placeholder'].get('mime_type', 'неизвестно')}]]" 
+        elif "unsupported_content" in part_dict:
+            content_to_display += f"[[Неподдерживаемый контент: {part_dict['unsupported_content']}]]"
+    
+    display_role = "user" if message_dict.get("role") == "user" else "assistant"
+    
+    if content_to_display:
+        with st.chat_message(display_role):
+            st.markdown(content_to_display)
 
 # --- Форма для ввода текста и загрузки файла ---
 with st.form("chat_form", clear_on_submit=True):
@@ -709,6 +700,7 @@ with st.form("chat_form", clear_on_submit=True):
                     display_content = f"Загружен файл: {uploaded_file.name}, {uploaded_file.type}"
 
             # Добавляем сообщение пользователя в UI сразу для лучшего UX
+            # Это будет временное добавление, полная история будет загружена после ответа AI.
             st.session_state.messages.append({"role": "user", "content": display_content})
             with st.chat_message("user"):
                 st.markdown(display_content)
@@ -740,8 +732,8 @@ with st.form("chat_form", clear_on_submit=True):
                 with st.spinner("Думаю..."):
                     response = ai.send_message(message=user_message, file=uploaded_file)
                 
-                # Добавляем ответ AI в UI. _load_history_for_display уже подтянет полный обмен.
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                # После отправки, история в AI.history будет обновлена. Загружаем ее для UI.
+                st.session_state.messages = ai.get_history()
         else:
             st.warning("Пожалуйста, введите запрос или загрузите файл.")
 
@@ -765,8 +757,8 @@ with col_clear:
     # Кнопка для очистки (удаления) текущего чата
     if st.button("🗑️", key="clear_history_button_bottom", help="Удалить текущий диалог"):
         if st.session_state.current_chat_name == DEFAULT_CHAT_NAME and not ai.get_history():
-            # Если это пустой "Новый чат", просто переключиться на него, но без удаления из Redis
-            # Так как его еще там нет.
+            # Если это пустой "Новый чат", просто переключиться на него, но без удаления из Redis,
+            # так как его еще там нет (он еще не был сохранен).
             st.session_state.current_chat_name = DEFAULT_CHAT_NAME
             st.session_state.messages = []
             st.session_state.ai = AI(user_id, DEFAULT_CHAT_NAME, redis_manager)
